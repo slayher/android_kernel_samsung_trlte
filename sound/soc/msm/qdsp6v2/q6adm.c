@@ -966,8 +966,8 @@ static int send_adm_cal_block(int port_id, struct acdb_cal_block *aud_cal,
 
 	if (perf_mode == LEGACY_PCM_MODE &&
 		this_adm.topology[index] == DS2_ADM_COPP_TOPOLOGY_ID) {
-		pr_err("%s: perf_mode %d, topology 0x%x", __func__, perf_mode,
-			this_adm.topology[index]);
+		pr_info("%s: perf_mode %d, topology 0x%x\n", __func__,
+			perf_mode, this_adm.topology[index]);
 		goto done;
 	}
 
@@ -1401,7 +1401,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 					DS2_ADM_COPP_TOPOLOGY_ID))
 					open.topology_id =
 						DEFAULT_COPP_TOPOLOGY;
-			}
+			} else
+				this_adm.topology[index] = open.topology_id;
 
 			open.dev_num_channel = channel_mode & 0xFF;
 			open.bit_width = bits_per_sample;
@@ -1449,7 +1450,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 			} else {
 				pr_err("%s: invalid num_chan %d\n", __func__,
 						channel_mode);
-				return -EINVAL;
+				ret = -EINVAL;
+				goto fail_cmd;
 			}
 			if ((open.dev_num_channel > 2) &&
 				multi_ch_map.set_channel_map)
@@ -1511,14 +1513,14 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 			atomic_read(&this_adm.copp_low_latency_id[index]));
 	} else {
 		atomic_inc(&this_adm.copp_cnt[index]);
-		this_adm.topology[index] = open.topology_id;
-		pr_debug("%s: index: %d coppid: %d", __func__, index,
+		pr_debug("%s: index: %d coppid: %d\n", __func__, index,
 			atomic_read(&this_adm.copp_id[index]));
 	}
 	return 0;
 
 fail_cmd:
 
+	this_adm.topology[index] = 0;
 	return ret;
 }
 
@@ -1916,7 +1918,6 @@ int adm_close(int port_id, int perf_mode)
 			goto fail_cmd;
 		}
 		atomic_dec(&this_adm.copp_cnt[index]);
-		this_adm.topology[index] = 0;
 	}
 	if ((perf_mode == LEGACY_PCM_MODE &&
 		!(atomic_read(&this_adm.copp_cnt[index]))) ||
@@ -1965,6 +1966,7 @@ int adm_close(int port_id, int perf_mode)
 				atomic_read(&this_adm.copp_cnt[index]));
 			atomic_set(&this_adm.copp_id[index],
 				RESET_COPP_ID);
+			this_adm.topology[index] = 0;
 		}
 
 		ret = apr_send_pkt(this_adm.apr, (uint32_t *)&close);
