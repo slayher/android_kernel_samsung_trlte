@@ -4729,7 +4729,6 @@ static int  _qcrypto_resume(struct platform_device *pdev)
 		if (qce_pm_table.resume)
 			qce_pm_table.resume(pengine->qce);
 
-		init_timer(&(pengine->bw_reaper_timer));
 		qcrypto_bw_set_timeout(pengine);
 
 		qcrypto_ce_set_bus(pengine, true);
