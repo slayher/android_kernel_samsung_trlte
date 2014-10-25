@@ -40,6 +40,7 @@ bin/qmuxd
 bin/rfs_access
 bin/rild
 bin/rmt_storage
+lib/libmdmdetect.so
 lib/libreference-ril.so
 lib/libril.so
 lib/libsec-ril.so
