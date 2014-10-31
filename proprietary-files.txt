@@ -34,7 +34,10 @@ vendor/lib/libqmiservices.so
 
 # Radio
 bin/efsks
+bin/ds_fmc_appd
 bin/ks
+bin/mdm_helper
+bin/mdm_helper_proxy
 bin/qcks
 bin/qmuxd
 bin/rfs_access
@@ -47,3 +50,5 @@ lib/libsec-ril.so
 lib/libsecnativefeature.so
 lib/libsecril-client.so
 vendor/lib/libril-qcril-hook-oem.so
+vendor/lib/libconfigdb.so
+vendor/lib/libxml.so
