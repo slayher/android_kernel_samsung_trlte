@@ -172,7 +172,7 @@
 
 	sound {
 		compatible = "qcom,apq8084-audio-tomtom";
-		qcom,model = "apq8084-tomtom-snd-card";
+		qcom,model = "apq8084-tomtom-mtp-snd-card";
 		qcom,micbias-en-msm-gpio = <&pma8084_gpios 19 0>;
 
 		qcom,audio-routing =
