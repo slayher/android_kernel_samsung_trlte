@@ -742,6 +742,13 @@ const char * const vmstat_text[] = {
 #endif
 	"nr_anon_transparent_hugepages",
 	"nr_free_cma",
+#if defined(CONFIG_CMA_PAGE_COUNTING)
+	"nr_cma_inactive_anon",
+	"nr_cma_active_anon",
+	"nr_cma_inactive_file",
+	"nr_cma_active_file",
+	"nr_cma_unevictable",
+#endif
 	"nr_dirty_threshold",
 	"nr_dirty_background_threshold",
 
@@ -1333,10 +1340,12 @@ static int __init setup_vmstat(void)
 #ifdef CONFIG_SMP
 	int cpu;
 
-	register_cpu_notifier(&vmstat_notifier);
+	cpu_notifier_register_begin();
+	__register_cpu_notifier(&vmstat_notifier);
 
 	for_each_online_cpu(cpu)
 		start_cpu_timer(cpu);
+	cpu_notifier_register_done();
 #endif
 #ifdef CONFIG_PROC_FS
 	proc_create("buddyinfo", S_IRUGO, NULL, &fragmentation_file_operations);

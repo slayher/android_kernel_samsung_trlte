@@ -46,6 +46,26 @@
 #define MAX_TIME_RESOLUTION 0xFFFFFF
 #define DEFAULT_TIME_RESOLUTION 0x7530
 
+/* Default 601 to 709 conversion coefficients for resolution: 176x144
+ * negative coeffs are converted to s4.9 format
+ * e.g. -22 converted to ((1<<13) - 22)
+ */
+#define MAX_MATRIX_COEFFS 9
+#define MAX_BIAS_COEFFS 3
+#define MAX_LIMIT_COEFFS 6
+/* 3x3 transformation matrix coefficients in s4.9 fixed point format */
+static u32 vpe_csc_601_to_709_matrix_coeff[MAX_MATRIX_COEFFS] = {
+	0x1B8, 0x1FCC, 0x1FA2, 0, 0x1CC, 0x34, 0, 0x22, 0x1CF
+};
+/* offset coefficients in s9 fixed point format */
+static u32 vpe_csc_601_to_709_bias_coeff[MAX_BIAS_COEFFS] = {
+    0x34, 0, 0x4
+};
+/* clamping value for Y/U/V([min,max] for Y/U/V) */
+static u32 vpe_csc_601_to_709_limit_coeff[MAX_LIMIT_COEFFS] = {
+    0x10, 0xEB, 0, 0xFF, 0, 0xFF
+};
+
 static const char *const mpeg_video_rate_control[] = {
 	"No Rate Control",
 	"VBR VFR",
@@ -797,6 +817,45 @@ static struct msm_vidc_ctrl msm_venc_ctrls[] = {
 		.step = 1,
 		.qmenu = NULL,
 	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_ENABLE_INITIAL_QP,
+		.name = "Enable setting initial QP",
+		.type = V4L2_CTRL_TYPE_BUTTON,
+		.minimum = 0,
+		.maximum = 0,
+		.default_value = 0,
+		.step = 0,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP,
+		.name = "Iframe initial QP",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.minimum = 1,
+		.maximum = 51,
+		.default_value = 1,
+		.step = 1,
+		.qmenu = NULL,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP,
+		.name = "Pframe initial QP",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.minimum = 1,
+		.maximum = 51,
+		.default_value = 1,
+		.step = 1,
+		.qmenu = NULL,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP,
+		.name = "Bframe initial QP",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.minimum = 1,
+		.maximum = 51,
+		.default_value = 1,
+		.step = 1,
+		.qmenu = NULL,
+	}
 };
 
 #define NUM_CTRLS ARRAY_SIZE(msm_venc_ctrls)
@@ -907,12 +966,12 @@ static int msm_venc_queue_setup(struct vb2_queue *q,
 		}
 
 		if (*num_buffers < MIN_NUM_CAPTURE_BUFFERS ||
-				*num_buffers > VIDEO_MAX_FRAME) {
+				*num_buffers > VB2_MAX_FRAME) {
 			int temp = *num_buffers;
 
 			*num_buffers = clamp_val(*num_buffers,
 					MIN_NUM_CAPTURE_BUFFERS,
-					VIDEO_MAX_FRAME);
+					VB2_MAX_FRAME);
 			dprintk(VIDC_INFO,
 				"Changing buffer count on CAPTURE_MPLANE from %d to %d for best effort encoding\n",
 				temp, *num_buffers);
@@ -2115,6 +2174,7 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 			break;
 		}
 
+		msm_comm_scale_clocks_and_bus(inst);
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_H264_VUI_BITSTREAM_RESTRICT:
 		property_id = HAL_PARAM_VENC_H264_VUI_BITSTREAM_RESTRC;
@@ -2218,6 +2278,7 @@ static int try_set_ext_ctrl(struct msm_vidc_inst *inst,
 	struct hal_ltrmode ltrmode;
 	u32 property_id = 0;
 	void *pdata = NULL;
+	struct hal_initial_quantization quant;
 
 	if (!inst || !inst->core || !inst->core->device || !ctrl) {
 		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
@@ -2241,6 +2302,26 @@ static int try_set_ext_ctrl(struct msm_vidc_inst *inst,
 				ltrmode.trustmode = 1;
 				property_id = HAL_PARAM_VENC_LTRMODE;
 				pdata = &ltrmode;
+				break;
+			case V4L2_CID_MPEG_VIDC_VIDEO_ENABLE_INITIAL_QP:
+				property_id = HAL_PARAM_VENC_ENABLE_INITIAL_QP;
+				quant.init_qp_enable = control[i].value;
+				pdata = &quant;
+				break;
+			case V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP:
+				quant.qpi = control[i].value;
+				property_id = HAL_PARAM_VENC_ENABLE_INITIAL_QP;
+				pdata = &quant;
+				break;
+			case V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP:
+				quant.qpp = control[i].value;
+				property_id = HAL_PARAM_VENC_ENABLE_INITIAL_QP;
+				pdata = &quant;
+				break;
+			case V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP:
+				quant.qpb = control[i].value;
+				property_id = HAL_PARAM_VENC_ENABLE_INITIAL_QP;
+				pdata = &quant;
 				break;
 			default:
 				dprintk(VIDC_ERR, "Invalid id set: %d\n",
@@ -2515,6 +2596,34 @@ int msm_venc_s_parm(struct msm_vidc_inst *inst, struct v4l2_streamparm *a)
 exit:
 	return rc;
 }
+
+int msm_venc_s_csc(struct msm_vidc_inst *inst)
+{
+	int rc = 0;
+	int count = 0;
+	struct hal_vpe_color_space_conversion vpe_csc;
+
+	dprintk(VIDC_DBG, "%s\n", __func__);
+
+	while (count < MAX_MATRIX_COEFFS) {
+		if (count < MAX_BIAS_COEFFS)
+			vpe_csc.csc_bias[count] =
+				vpe_csc_601_to_709_bias_coeff[count];
+		if (count < MAX_LIMIT_COEFFS)
+			vpe_csc.csc_limit[count] =
+				vpe_csc_601_to_709_limit_coeff[count];
+		vpe_csc.csc_matrix[count] =
+			vpe_csc_601_to_709_matrix_coeff[count];
+		count = count + 1;
+	}
+	rc = msm_comm_try_set_prop(inst,
+			HAL_PARAM_VPE_COLOR_SPACE_CONVERSION, &vpe_csc);
+	if (rc) {
+		dprintk(VIDC_ERR, "%s vpe csc set_prop failed\n",
+					__func__);
+	}
+	return rc;
+}
 int msm_venc_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 {
 	struct msm_vidc_format *fmt = NULL;
@@ -2532,6 +2641,10 @@ int msm_venc_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 		return -EINVAL;
 	}
 	hdev = inst->core->device;
+
+//	if (msm_vidc_vpe_csc_601_to_709) {
+		msm_venc_s_csc(inst);
+//	}
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		fmt = msm_comm_get_pixel_fmt_fourcc(venc_formats,
@@ -2961,8 +3074,20 @@ static struct v4l2_ctrl **get_super_cluster(struct msm_vidc_inst *inst,
 	struct v4l2_ctrl **cluster = kmalloc(sizeof(struct v4l2_ctrl *) *
 			NUM_CTRLS, GFP_KERNEL);
 
+/* MMRND_AVRC. Start */
+// Avoid PREVENT
+#if 1
+	if (!size || !cluster || !inst)
+	{
+		if(cluster)
+			kfree(cluster); // PREVENT Resource leak fix
+		return NULL;
+	}
+#else
 	if (!size || !cluster || !inst)
 		return NULL;
+#endif
+/* MMRND_AVRC. End */
 
 	for (c = 0; c < NUM_CTRLS; c++)
 		cluster[sz++] =  inst->ctrls[c];

@@ -65,6 +65,24 @@ struct audit_krule;
 struct user_namespace;
 struct timezone;
 
+#ifdef CONFIG_TIMA_RKP_RO_CRED
+#define CRED_RO_AREA __attribute__((section (".tima.rkp.initcred")))
+#define RO_PAGES_ORDER   9
+
+extern char __rkp_ro_start[], __rkp_ro_end[];
+/*Check whether the address belong to Cred Area*/
+static inline int tima_ro_page(unsigned long addr)
+{
+	return (addr >= ((unsigned long) __rkp_ro_start) 
+		&& addr < ((unsigned long) __rkp_ro_end));
+}
+extern int security_integrity_current(void);
+
+#else
+#define CRED_RO_AREA   
+#define security_integrity_current()  0
+#endif /*CONFIG_TIMA_RKP_RO_CRED*/
+
 /*
  * These functions are in security/capability.c and are used
  * as the default capabilities functions

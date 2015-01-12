@@ -788,17 +788,23 @@ done:
  * this dispatch queue
  *
  */
-static int row_init_queue(struct request_queue *q)
+static int row_init_queue(struct request_queue *q, struct elevator_type *e)
 {
 
 	struct row_data *rdata;
 	int i;
+	struct elevator_queue *eq;
 
+	eq = elevator_alloc(q, e);
+	if (!eq)
+		return -ENOMEM;
 	rdata = kmalloc_node(sizeof(*rdata),
 			     GFP_KERNEL | __GFP_ZERO, q->node);
-	if (!rdata)
+	if (!rdata) {
+		kobject_put(&eq->kobj);
 		return -ENOMEM;
-
+	}
+	eq->elevator_data = rdata;
 	memset(rdata, 0, sizeof(*rdata));
 	for (i = 0; i < ROWQ_MAX_PRIO; i++) {
 		INIT_LIST_HEAD(&rdata->row_queues[i].fifo);
@@ -829,7 +835,9 @@ static int row_init_queue(struct request_queue *q)
 	rdata->last_served_ioprio_class = IOPRIO_CLASS_NONE;
 	rdata->rd_idle_data.idling_queue_idx = ROWQ_MAX_PRIO;
 	rdata->dispatch_queue = q;
-	q->elevator->elevator_data = rdata;
+	spin_lock_irq(q->queue_lock);
+	q->elevator = eq;
+	spin_unlock_irq(q->queue_lock);
 
 	return 0;
 }

@@ -9,6 +9,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+#define DEBUG
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/firmware.h>
@@ -40,13 +41,29 @@
 #include "wcd9xxx-common.h"
 #include "wcd_cpe_core.h"
 
+#if defined(CONFIG_SND_SOC_ES705)
+#include "audience/es705-export.h"
+#endif
+#if defined(CONFIG_SND_SOC_ES705)
+#define CONFIG_SND_SOC_ESXXX
+#define REMOTE_WCD9330_ROUTE_ENABLE_CB  es705_remote_route_enable
+#define SLIM_WCD9330_GET_CHANNEL_MAP_CB es705_slim_get_channel_map
+#define SLIM_WCD9330_SET_CHANNEL_MAP_CB es705_slim_set_channel_map
+#define SLIM_WCD9330_HW_PARAMS_CB       es705_slim_hw_params
+#define REMOTE_WCD9330_CFG_SLIM_RX_CB	es705_remote_cfg_slim_rx
+#define REMOTE_WCD9330_CLOSE_SLIM_RX_CB	es705_remote_close_slim_rx
+#define REMOTE_WCD9330_CFG_SLIM_TX_CB	es705_remote_cfg_slim_tx
+#define REMOTE_WCD9330_CLOSE_SLIM_TX_CB	es705_remote_close_slim_tx
+#define REMOTE_WCD9330_ADD_CODEC_CONTROLS_CB	es705_remote_add_codec_controls
+#endif
+
 #define TOMTOM_MAD_SLIMBUS_TX_PORT 12
 #define TOMTOM_MAD_AUDIO_FIRMWARE_PATH "wcd9320/wcd9320_mad_audio.bin"
 #define TOMTOM_VALIDATE_RX_SBPORT_RANGE(port) ((port >= 16) && (port <= 23))
 #define TOMTOM_CONVERT_RX_SBPORT_ID(port) (port - 16) /* RX1 port ID = 0 */
 
 #define TOMTOM_HPH_PA_SETTLE_COMP_ON 3000
-#define TOMTOM_HPH_PA_SETTLE_COMP_OFF 13000
+#define TOMTOM_HPH_PA_SETTLE_COMP_OFF 25000
 
 #define DAPM_MICBIAS2_EXTERNAL_STANDALONE "MIC BIAS2 External Standalone"
 
@@ -57,12 +74,19 @@
 #define TOMTOM_CPE_MINOR_VER 0
 #define TOMTOM_CPE_CDC_ID 1
 
+extern void msm_submic_delay_event(bool state);
+
 static int cpe_debug_mode;
 module_param(cpe_debug_mode, int,
 	     S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(cpe_debug_mode, "boot cpe in debug mode");
 
 static atomic_t kp_tomtom_priv;
+
+static int high_perf_mode;
+module_param(high_perf_mode, int,
+			S_IRUGO | S_IWUSR | S_IWGRP);
+MODULE_PARM_DESC(high_perf_mode, "enable/disable class AB config for hph");
 
 static struct afe_param_slimbus_slave_port_cfg tomtom_slimbus_slave_port_cfg = {
 	.minor_version = 1,
@@ -242,7 +266,7 @@ static struct afe_param_id_clip_bank_sel clip_bank_sel = {
 
 #define TOMTOM_I2S_MASTER_MODE_MASK 0x08
 
-#define TOMTOM_SLIM_CLOSE_TIMEOUT 1000
+#define TOMTOM_SLIM_CLOSE_TIMEOUT 100
 #define TOMTOM_SLIM_IRQ_OVERFLOW (1 << 0)
 #define TOMTOM_SLIM_IRQ_UNDERFLOW (1 << 1)
 #define TOMTOM_SLIM_IRQ_PORT_CLOSED (1 << 2)
@@ -460,6 +484,9 @@ struct tomtom_priv {
 
 	/* handle to cpe core */
 	struct wcd_cpe_core *cpe_core;
+
+	/* UHQA (class AB) mode */
+	u8 uhqa_mode;
 };
 
 static const u32 comp_shift[] = {
@@ -543,6 +570,47 @@ static unsigned short tx_digital_gain_reg[] = {
 	TOMTOM_A_CDC_TX9_VOL_CTL_GAIN,
 	TOMTOM_A_CDC_TX10_VOL_CTL_GAIN,
 };
+
+static int tomtom_get_sample_rate(struct snd_soc_codec *codec, int path)
+{
+	if (path == 8)
+		return snd_soc_read(codec, TOMTOM_A_CDC_RX8_B5_CTL);
+	else
+		return snd_soc_read(codec,
+			(TOMTOM_A_CDC_RX1_B5_CTL + 8 * (path - 1)));
+}
+
+static int tomtom_compare_bit_format(struct snd_soc_codec *codec,
+				int bit_format)
+{
+	int i = 0;
+	int ret = 0;
+	struct tomtom_priv *tomtom_p = snd_soc_codec_get_drvdata(codec);
+
+	for (i = 0; i < NUM_CODEC_DAIS; i++) {
+		if (tomtom_p->dai[i].bit_width == bit_format) {
+			ret = 1;
+			break;
+		}
+	}
+	return ret;
+}
+
+static int tomtom_update_uhqa_mode(struct snd_soc_codec *codec, int path)
+{
+	int ret = 0;
+	struct tomtom_priv *tomtom_p = snd_soc_codec_get_drvdata(codec);
+
+	/* UHQA path has fs=192KHz & bit=24 bit */
+	if (((tomtom_get_sample_rate(codec, path) & 0xE0) == 0xA0) &&
+		(tomtom_compare_bit_format(codec, 24))) {
+		tomtom_p->uhqa_mode = 1;
+	} else {
+		tomtom_p->uhqa_mode = 0;
+	}
+	dev_dbg(codec->dev, "%s: uhqa_mode=%d", __func__, tomtom_p->uhqa_mode);
+	return ret;
+}
 
 static int tomtom_get_anc_slot(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
@@ -1485,6 +1553,7 @@ static const struct snd_kcontrol_new tomtom_1_x_analog_gain_controls[] = {
 static int tomtom_hph_impedance_get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
+#if !defined(CONFIG_SAMSUNG_JACK)
 	uint32_t zl, zr;
 	bool hphr;
 	struct soc_multi_mixer_control *mc;
@@ -1497,7 +1566,9 @@ static int tomtom_hph_impedance_get(struct snd_kcontrol *kcontrol,
 	wcd9xxx_mbhc_get_impedance(&priv->mbhc, &zl, &zr);
 	pr_debug("%s: zl %u, zr %u\n", __func__, zl, zr);
 	ucontrol->value.integer.value[0] = hphr ? zr : zl;
-
+#else
+	ucontrol->value.integer.value[0] = 0;
+#endif
 	return 0;
 }
 
@@ -2599,9 +2670,9 @@ static int tomtom_codec_enable_lineout(struct snd_soc_dapm_widget *w,
 						 WCD9XXX_CLSH_STATE_LO,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
-		pr_debug("%s: sleeping 3 ms after %s PA turn on\n",
+		pr_debug("%s: sleeping 5 ms after %s PA turn on\n",
 				__func__, w->name);
-		usleep_range(3000, 3100);
+		usleep_range(5000, 5100);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		wcd9xxx_clsh_fsm(codec, &tomtom->clsh_d,
@@ -2609,6 +2680,10 @@ static int tomtom_codec_enable_lineout(struct snd_soc_dapm_widget *w,
 						 WCD9XXX_CLSH_REQ_DISABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
 		snd_soc_update_bits(codec, lineout_gain_reg, 0x40, 0x00);
+		pr_debug("%s: sleeping 5 ms after %s PA turn off\n",
+				__func__, w->name);
+		/* Wait for CnP time after PA disable */
+		usleep_range(5000, 5100);
 		break;
 	}
 	return 0;
@@ -2896,6 +2971,24 @@ static int tomtom_codec_enable_micbias(struct snd_soc_dapm_widget *w,
 			}
 			pr_debug("%s: micb_2_users %d\n", __func__,
 				 tomtom->micb_2_users);
+#ifdef CONFIG_CODEC_EAR_BIAS
+		} else if (micb_ctl_reg == TOMTOM_A_MICB_2_CTL) {
+			if (++tomtom->micb_2_users == 1) {
+				if (tomtom->resmgr.pdata->
+				    micbias.bias2_is_headset_only)
+					wcd9xxx_resmgr_add_cond_update_bits(
+							 &tomtom->resmgr,
+							 WCD9XXX_COND_HPH_MIC,
+							 micb_ctl_reg, w->shift,
+							 false);
+				else
+					snd_soc_update_bits(codec, micb_ctl_reg,
+							    1 << w->shift,
+							    1 << w->shift);
+			}
+			pr_debug("%s: micb_2_users %d\n", __func__,
+				 tomtom->micb_2_users);
+#endif			
 		} else {
 			snd_soc_update_bits(codec, micb_ctl_reg, 1 << w->shift,
 					    1 << w->shift);
@@ -2925,6 +3018,25 @@ static int tomtom_codec_enable_micbias(struct snd_soc_dapm_widget *w,
 			WARN(tomtom->micb_2_users < 0,
 			     "Unexpected micbias users %d\n",
 			     tomtom->micb_2_users);
+#ifdef CONFIG_CODEC_EAR_BIAS
+		} else if ( micb_ctl_reg == TOMTOM_A_MICB_2_CTL) {
+			if (--tomtom->micb_2_users == 0) {
+				if (tomtom->resmgr.pdata->
+				    micbias.bias2_is_headset_only)
+					wcd9xxx_resmgr_rm_cond_update_bits(
+							&tomtom->resmgr,
+							WCD9XXX_COND_HPH_MIC,
+							micb_ctl_reg, 7, false);
+				else
+					snd_soc_update_bits(codec, micb_ctl_reg,
+							    1 << w->shift, 0);
+			}
+			pr_debug("%s: micb_2_users %d\n", __func__,
+				 tomtom->micb_2_users);
+			WARN(tomtom->micb_2_users < 0,
+			     "Unexpected micbias users %d\n",
+			     tomtom->micb_2_users);
+#endif			
 		} else {
 			snd_soc_update_bits(codec, micb_ctl_reg, 1 << w->shift,
 					    0);
@@ -3084,6 +3196,8 @@ static int tomtom_codec_enable_dec(struct snd_soc_dapm_widget *w,
 		break;
 
 	case SND_SOC_DAPM_POST_PMU:
+		
+		msm_submic_delay_event(1);
 
 		/* Disable TX digital mute */
 		snd_soc_update_bits(codec, tx_vol_ctl_reg, 0x01, 0x00);
@@ -3178,6 +3292,10 @@ static int tomtom_codec_enable_interpolator(struct snd_soc_dapm_widget *w,
 				  snd_soc_read(codec,
 				  rx_digital_gain_reg[w->shift])
 				  );
+		/* Check for Rx1 and Rx2 paths for uhqa mode update */
+		if (w->shift == 0 || w->shift == 1)
+			tomtom_update_uhqa_mode(codec, (1 << w->shift));
+
 		break;
 	}
 	return 0;
@@ -3265,24 +3383,30 @@ static int tomtom_hphl_dac_event(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = w->codec;
 	struct tomtom_priv *tomtom_p = snd_soc_codec_get_drvdata(codec);
-	uint32_t impedl, impedr;
-	int ret = 0;
+/*	uint32_t impedl, impedr;
+	int ret = 0;*/
 
 	pr_debug("%s %s %d\n", __func__, w->name, event);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		wcd9xxx_clsh_fsm(codec, &tomtom_p->clsh_d,
+		if (!high_perf_mode && !tomtom_p->uhqa_mode) {
+			wcd9xxx_clsh_fsm(codec, &tomtom_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHL,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_PRE_DAC);
-		ret = wcd9xxx_mbhc_get_impedance(&tomtom_p->mbhc,
+		} else {
+			wcd9xxx_enable_high_perf_mode(codec, &tomtom_p->clsh_d,
+						WCD9XXX_CLSAB_STATE_HPHL,
+						WCD9XXX_CLSAB_REQ_ENABLE);
+		}
+/*		ret = wcd9xxx_mbhc_get_impedance(&tomtom_p->mbhc,
 					&impedl, &impedr);
-		if (!ret)
-			wcd9xxx_clsh_imped_config(codec, impedl);
-		else
-			dev_dbg(codec->dev, "%s: Failed to get mbhc impedance %d\n",
-						__func__, ret);
+		if (!ret)*/
+			wcd9xxx_clsh_imped_config(codec, 0);
+/*		else
+			dev_dbg(codec->dev, "Failed to get mbhc impedance %d\n",
+						ret);*/
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		break;
@@ -3301,10 +3425,16 @@ static int tomtom_hphr_dac_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		snd_soc_update_bits(codec, w->reg, 0x40, 0x40);
-		wcd9xxx_clsh_fsm(codec, &tomtom_p->clsh_d,
+		if (!high_perf_mode && !tomtom_p->uhqa_mode) {
+			wcd9xxx_clsh_fsm(codec, &tomtom_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHR,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_PRE_DAC);
+		} else {
+			wcd9xxx_enable_high_perf_mode(codec, &tomtom_p->clsh_d,
+						WCD9XXX_CLSAB_STATE_HPHR,
+						WCD9XXX_CLSAB_REQ_ENABLE);
+		}
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		snd_soc_update_bits(codec, w->reg, 0x40, 0x00);
@@ -3424,6 +3554,7 @@ static int tomtom_hph_pa_event(struct snd_soc_dapm_widget *w,
 	struct tomtom_priv *tomtom = snd_soc_codec_get_drvdata(codec);
 	enum wcd9xxx_notify_event e_pre_on, e_post_off;
 	u8 req_clsh_state;
+	u8 req_clsab_state;
 	u32 pa_settle_time = TOMTOM_HPH_PA_SETTLE_COMP_OFF;
 
 	pr_debug("%s: %s event = %d\n", __func__, w->name, event);
@@ -3431,10 +3562,12 @@ static int tomtom_hph_pa_event(struct snd_soc_dapm_widget *w,
 		e_pre_on = WCD9XXX_EVENT_PRE_HPHL_PA_ON;
 		e_post_off = WCD9XXX_EVENT_POST_HPHL_PA_OFF;
 		req_clsh_state = WCD9XXX_CLSH_STATE_HPHL;
+		req_clsab_state = WCD9XXX_CLSAB_STATE_HPHL;
 	} else if (w->shift == 4) {
 		e_pre_on = WCD9XXX_EVENT_PRE_HPHR_PA_ON;
 		e_post_off = WCD9XXX_EVENT_POST_HPHR_PA_OFF;
 		req_clsh_state = WCD9XXX_CLSH_STATE_HPHR;
+		req_clsab_state = WCD9XXX_CLSAB_STATE_HPHR;
 	} else {
 		pr_err("%s: Invalid w->shift %d\n", __func__, w->shift);
 		return -EINVAL;
@@ -3453,11 +3586,12 @@ static int tomtom_hph_pa_event(struct snd_soc_dapm_widget *w,
 		usleep_range(pa_settle_time, pa_settle_time + 1000);
 		pr_debug("%s: sleep %d us after %s PA enable\n", __func__,
 				pa_settle_time, w->name);
-		wcd9xxx_clsh_fsm(codec, &tomtom->clsh_d,
+		if (!high_perf_mode && !tomtom->uhqa_mode) {
+			wcd9xxx_clsh_fsm(codec, &tomtom->clsh_d,
 						 req_clsh_state,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
-
+		}
 		break;
 
 	case SND_SOC_DAPM_POST_PMD:
@@ -3468,10 +3602,16 @@ static int tomtom_hph_pa_event(struct snd_soc_dapm_widget *w,
 		/* Let MBHC module know PA turned off */
 		wcd9xxx_resmgr_notifier_call(&tomtom->resmgr, e_post_off);
 
-		wcd9xxx_clsh_fsm(codec, &tomtom->clsh_d,
+		if (!high_perf_mode && !tomtom->uhqa_mode) {
+			wcd9xxx_clsh_fsm(codec, &tomtom->clsh_d,
 						 req_clsh_state,
 						 WCD9XXX_CLSH_REQ_DISABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
+		} else {
+			wcd9xxx_enable_high_perf_mode(codec, &tomtom->clsh_d,
+						req_clsab_state,
+						WCD9XXX_CLSAB_REQ_DISABLE);
+		}
 
 		break;
 	}
@@ -4287,6 +4427,7 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"MIC BIAS3 Internal2", NULL, "LDO_H"},
 	{"MIC BIAS3 External", NULL, "LDO_H"},
 	{"MIC BIAS4 External", NULL, "LDO_H"},
+	{"Main Mic Bias", NULL, "LDO_H"},
 	{DAPM_MICBIAS2_EXTERNAL_STANDALONE, NULL, "LDO_H Standalone"},
 };
 
@@ -4447,6 +4588,7 @@ static void tomtom_shutdown(struct snd_pcm_substream *substream,
 	pr_debug("%s(): substream = %s  stream = %d\n" , __func__,
 		 substream->name, substream->stream);
 }
+
 
 int tomtom_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 {
@@ -4962,7 +5104,121 @@ static int tomtom_hw_params(struct snd_pcm_substream *substream,
 
 	return 0;
 }
+#if defined(CONFIG_SND_SOC_ESXXX)
+int (*remote_wcd9330_route_enable)(struct snd_soc_dai *dai) = REMOTE_WCD9330_ROUTE_ENABLE_CB;
+int (*slim_wcd9330_get_channel_map)(struct snd_soc_dai *dai,
+		unsigned int *tx_num, unsigned int *tx_slot,
+		unsigned int *rx_num, unsigned int *rx_slot)
+			= SLIM_WCD9330_GET_CHANNEL_MAP_CB;
+int (*slim_wcd9330_set_channel_map)(struct snd_soc_dai *dai,
+		unsigned int tx_num, unsigned int *tx_slot,
+		unsigned int rx_num, unsigned int *rx_slot)
+			= SLIM_WCD9330_SET_CHANNEL_MAP_CB;
+int (*slim_wcd9330_hw_params)(struct snd_pcm_substream *substream,
+		struct snd_pcm_hw_params *params,
+		struct snd_soc_dai *dai)
+		= SLIM_WCD9330_HW_PARAMS_CB;
+int (*remote_wcd9330_cfg_slim_rx)(int dai_id)	=	REMOTE_WCD9330_CFG_SLIM_RX_CB;
+int (*remote_wcd9330_close_slim_rx)(int dai_id)	=	REMOTE_WCD9330_CLOSE_SLIM_RX_CB;
+int (*remote_wcd9330_cfg_slim_tx)(int dai_id)	=	REMOTE_WCD9330_CFG_SLIM_TX_CB;
+int (*remote_wcd9330_close_slim_tx)(int dai_id)	=	REMOTE_WCD9330_CLOSE_SLIM_TX_CB;
+int (*remote_wcd9330_add_codec_controls)(struct snd_soc_codec *codec)
+		= REMOTE_WCD9330_ADD_CODEC_CONTROLS_CB;
 
+static int tomtom_esxxx_startup(struct snd_pcm_substream *substream,
+		struct snd_soc_dai *dai)
+{
+	tomtom_startup(substream, dai);
+/*
+	if (es705_remote_route_enable(dai))
+		es705_slim_startup(substream, dai);
+*/
+
+	return 0;
+}
+
+static void tomtom_esxxx_shutdown(struct snd_pcm_substream *substream,
+		struct snd_soc_dai *dai)
+{
+	tomtom_shutdown(substream, dai);
+
+/*
+	if (es705_remote_route_enable(dai))
+		es705_slim_shutdown(substream, dai);
+*/
+}
+
+static int tomtom_esxxx_hw_params(struct snd_pcm_substream *substream,
+		struct snd_pcm_hw_params *params,
+		struct snd_soc_dai *dai)
+{
+	int rc = 0;
+	pr_info("%s: dai_name = %s DAI-ID %x rate %d num_ch %d\n", __func__,
+			dai->name, dai->id, params_rate(params),
+			params_channels(params));
+
+	rc = tomtom_hw_params(substream, params, dai);
+
+	if (remote_wcd9330_route_enable(dai))
+		rc = slim_wcd9330_hw_params(substream, params, dai);
+
+	return rc;
+}
+static int tomtom_esxxx_set_channel_map(struct snd_soc_dai *dai,
+				unsigned int tx_num, unsigned int *tx_slot,
+				unsigned int rx_num, unsigned int *rx_slot)
+
+{
+	unsigned int tomtom_tx_num = 0;
+	unsigned int tomtom_tx_slot[6];
+	unsigned int tomtom_rx_num = 0;
+	unsigned int tomtom_rx_slot[6];
+	int rc = 0;
+	pr_info("%s(): dai_name = %s DAI-ID %x tx_ch %d rx_ch %d\n",
+			__func__, dai->name, dai->id, tx_num, rx_num);
+
+	if (remote_wcd9330_route_enable(dai)) {
+		rc = tomtom_get_channel_map(dai, &tomtom_tx_num, tomtom_tx_slot,
+					&tomtom_rx_num, tomtom_rx_slot);
+
+		rc = tomtom_set_channel_map(dai, tx_num, tomtom_tx_slot, rx_num, tomtom_rx_slot);
+
+		rc = slim_wcd9330_set_channel_map(dai, tx_num, tx_slot, rx_num,
+					rx_slot);
+	} else
+		rc = tomtom_set_channel_map(dai, tx_num, tx_slot, rx_num, rx_slot);
+
+	return rc;
+}
+
+static int tomtom_esxxx_get_channel_map(struct snd_soc_dai *dai,
+				unsigned int *tx_num, unsigned int *tx_slot,
+				unsigned int *rx_num, unsigned int *rx_slot)
+
+{
+	int rc = 0;
+
+	pr_info("%s(): dai_name = %s DAI-ID %d tx_ch %d rx_ch %d\n",
+			__func__, dai->name, dai->id, *tx_num, *rx_num);
+
+	if (remote_wcd9330_route_enable(dai))
+		rc = slim_wcd9330_get_channel_map(dai, tx_num, tx_slot, rx_num,
+					rx_slot);
+	else
+		rc = tomtom_get_channel_map(dai, tx_num, tx_slot, rx_num, rx_slot);
+
+	return rc;
+}
+static struct snd_soc_dai_ops tomtom_dai_ops = {
+	.startup = tomtom_esxxx_startup,
+	.shutdown = tomtom_esxxx_shutdown,
+	.hw_params = tomtom_esxxx_hw_params,
+	.set_sysclk = tomtom_set_dai_sysclk,
+	.set_fmt = tomtom_set_dai_fmt,
+	.set_channel_map = tomtom_esxxx_set_channel_map,
+	.get_channel_map = tomtom_esxxx_get_channel_map,
+};
+#else
 static struct snd_soc_dai_ops tomtom_dai_ops = {
 	.startup = tomtom_startup,
 	.shutdown = tomtom_shutdown,
@@ -4972,7 +5228,7 @@ static struct snd_soc_dai_ops tomtom_dai_ops = {
 	.set_channel_map = tomtom_set_channel_map,
 	.get_channel_map = tomtom_get_channel_map,
 };
-
+#endif
 static struct snd_soc_dai_driver tomtom_dai[] = {
 	{
 		.name = "tomtom_rx1",
@@ -5246,11 +5502,17 @@ static int tomtom_codec_enable_slimrx(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_POST_PMU:
 		tomtom_codec_enable_int_port(dai, codec);
 		(void) tomtom_codec_enable_slim_chmask(dai, true);
+#if defined(CONFIG_SND_SOC_ESXXX)
+		ret = remote_wcd9330_cfg_slim_rx(w->shift);
+#endif
 		ret = wcd9xxx_cfg_slim_sch_rx(core, &dai->wcd9xxx_ch_list,
 					      dai->rate, dai->bit_width,
 					      &dai->grph);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+#if defined(CONFIG_SND_SOC_ESXXX)
+		ret = remote_wcd9330_close_slim_rx(w->shift);
+#endif
 		ret = wcd9xxx_close_slim_sch_rx(core, &dai->wcd9xxx_ch_list,
 						dai->grph);
 		ret = tomtom_codec_enable_slim_chmask(dai, false);
@@ -5362,8 +5624,14 @@ static int tomtom_codec_enable_slimtx(struct snd_soc_dapm_widget *w,
 		ret = wcd9xxx_cfg_slim_sch_tx(core, &dai->wcd9xxx_ch_list,
 					      dai->rate, dai->bit_width,
 					      &dai->grph);
+#if defined(CONFIG_SND_SOC_ESXXX)
+			ret = remote_wcd9330_cfg_slim_tx(w->shift);
+#endif
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+#if defined(CONFIG_SND_SOC_ESXXX)
+		ret = remote_wcd9330_close_slim_tx(w->shift);
+#endif
 		ret = wcd9xxx_close_slim_sch_tx(core, &dai->wcd9xxx_ch_list,
 						dai->grph);
 		ret = tomtom_codec_enable_slim_chmask(dai, false);
@@ -5768,6 +6036,9 @@ static const struct snd_soc_dapm_widget tomtom_dapm_widgets[] = {
 			       tomtom_codec_enable_micbias,
 			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
 			       SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_MICBIAS_E("Main Mic Bias", 0, 0, 0,
+			       0, SND_SOC_DAPM_PRE_PMU |SND_SOC_DAPM_POST_PMU |
+			       SND_SOC_DAPM_POST_PMD), 	
 
 	SND_SOC_DAPM_INPUT("AMIC3"),
 
@@ -6423,7 +6694,7 @@ static const struct wcd9xxx_reg_mask_val tomtom_1_0_reg_defaults[] = {
 	TOMTOM_REG_VAL(TOMTOM_A_BUCK_CTRL_CCL_4, 0x51),
 	TOMTOM_REG_VAL(TOMTOM_A_NCP_DTEST, 0x10),
 	TOMTOM_REG_VAL(TOMTOM_A_RX_HPH_CHOP_CTL, 0xA4),
-	TOMTOM_REG_VAL(TOMTOM_A_RX_HPH_OCP_CTL, 0x69),
+	TOMTOM_REG_VAL(TOMTOM_A_RX_HPH_OCP_CTL, 0x6B),
 	TOMTOM_REG_VAL(TOMTOM_A_RX_HPH_CNP_WG_CTL, 0xDA),
 	TOMTOM_REG_VAL(TOMTOM_A_RX_HPH_CNP_WG_TIME, 0x15),
 	TOMTOM_REG_VAL(TOMTOM_A_RX_EAR_BIAS_PA, 0x76),
@@ -6551,6 +6822,9 @@ static const struct wcd9xxx_reg_mask_val tomtom_codec_reg_init_val[] = {
 
 	/* set MAD input MIC to DMIC1 */
 	{TOMTOM_A_CDC_MAD_INP_SEL, 0x0F, 0x08},
+#if defined (CONFIG_SAMSUNG_JACK)
+	{TOMTOM_A_MBHC_INSERT_DETECT, 0x04, 0x04},
+#endif
 };
 
 static void tomtom_codec_init_reg(struct snd_soc_codec *codec)
@@ -6916,18 +7190,15 @@ static int tomtom_post_reset_cb(struct wcd9xxx *wcd9xxx)
 	snd_soc_card_change_online_state(codec->card, 1);
 
 	mutex_lock(&codec->mutex);
+	if (codec->reg_def_copy) {
+		pr_debug("%s: Update ASOC cache", __func__);
+		kfree(codec->reg_cache);
+		codec->reg_cache = kmemdup(codec->reg_def_copy,
+						codec->reg_size, GFP_KERNEL);
+	}
 
 	tomtom_update_reg_defaults(codec);
-	if (wcd9xxx->mclk_rate == TOMTOM_MCLK_CLK_12P288MHZ)
-		snd_soc_update_bits(codec, TOMTOM_A_CHIP_CTL, 0x06, 0x0);
-	else if (wcd9xxx->mclk_rate == TOMTOM_MCLK_CLK_9P6MHZ)
-		snd_soc_update_bits(codec, TOMTOM_A_CHIP_CTL, 0x06, 0x2);
 	tomtom_codec_init_reg(codec);
-
-	codec->cache_sync = true;
-	snd_soc_cache_sync(codec);
-	codec->cache_sync = false;
-
 	ret = tomtom_handle_pdata(tomtom);
 	if (IS_ERR_VALUE(ret))
 		pr_err("%s: bad pdata\n", __func__);
@@ -7023,10 +7294,12 @@ static const struct snd_soc_dapm_widget tomtom_1_dapm_widgets[] = {
 			   SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_ADC_E("ADC5", NULL, TOMTOM_A_TX_5_GAIN, 7, 0,
 			   tomtom_codec_enable_adc,
-			   SND_SOC_DAPM_POST_PMU),
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+			   SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_ADC_E("ADC6", NULL, TOMTOM_A_TX_6_GAIN, 7, 0,
 			   tomtom_codec_enable_adc,
-			   SND_SOC_DAPM_POST_PMU),
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+			   SND_SOC_DAPM_POST_PMD),
 };
 
 static struct regulator *tomtom_codec_find_regulator(struct snd_soc_codec *cdc,
@@ -7108,6 +7381,17 @@ int tomtom_enable_cpe(struct snd_soc_codec *codec)
 }
 EXPORT_SYMBOL(tomtom_enable_cpe);
 
+
+#ifdef CONFIG_CODEC_EAR_BIAS
+bool codec_probe_done = false;
+
+bool is_codec_probe_done(void)
+{
+	return codec_probe_done;
+}
+EXPORT_SYMBOL(is_codec_probe_done);
+#endif
+
 static int tomtom_codec_probe(struct snd_soc_codec *codec)
 {
 	struct wcd9xxx *control;
@@ -7161,7 +7445,7 @@ static int tomtom_codec_probe(struct snd_soc_codec *codec)
 	wcd9xxx_clsh_init(&tomtom->clsh_d, &tomtom->resmgr);
 
 	rco_clk_rate = TOMTOM_MCLK_CLK_9P6MHZ;
-
+#if !defined(CONFIG_SAMSUNG_JACK)
 	/* init and start mbhc */
 	ret = wcd9xxx_mbhc_init(&tomtom->mbhc, &tomtom->resmgr, codec,
 				tomtom_enable_mbhc_micbias,
@@ -7171,7 +7455,7 @@ static int tomtom_codec_probe(struct snd_soc_codec *codec)
 		pr_err("%s: mbhc init failed %d\n", __func__, ret);
 		goto err_nomem_slimch;
 	}
-
+#endif
 	tomtom->codec = codec;
 	for (i = 0; i < COMPANDER_MAX; i++) {
 		tomtom->comp_enabled[i] = 0;
@@ -7199,6 +7483,10 @@ static int tomtom_codec_probe(struct snd_soc_codec *codec)
 	tomtom->spkdrv_reg = tomtom_codec_find_regulator(codec,
 						       WCD9XXX_VDD_SPKDRV_NAME);
 
+
+#if defined(CONFIG_SND_SOC_ESXXX)
+	remote_wcd9330_add_codec_controls(codec);
+#endif
 	ptr = kmalloc((sizeof(tomtom_rx_chs) +
 		       sizeof(tomtom_tx_chs)), GFP_KERNEL);
 	if (!ptr) {
@@ -7264,6 +7552,9 @@ static int tomtom_codec_probe(struct snd_soc_codec *codec)
 	snd_soc_dapm_sync(dapm);
 
 	codec->ignore_pmdown_time = 1;
+#ifdef CONFIG_CODEC_EAR_BIAS
+	codec_probe_done = true;
+#endif	
 	return ret;
 
 err_pdata:
@@ -7282,9 +7573,10 @@ static int tomtom_codec_remove(struct snd_soc_codec *codec)
 	WCD9XXX_BG_CLK_UNLOCK(&tomtom->resmgr);
 
 	tomtom_cleanup_irqs(tomtom);
-
+#if !defined(CONFIG_SAMSUNG_JACK)
 	/* cleanup MBHC */
 	wcd9xxx_mbhc_deinit(&tomtom->mbhc);
+#endif
 	/* cleanup resmgr */
 	wcd9xxx_resmgr_deinit(&tomtom->resmgr);
 

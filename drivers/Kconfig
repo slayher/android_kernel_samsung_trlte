@@ -14,6 +14,8 @@ source "drivers/parport/Kconfig"
 
 source "drivers/pnp/Kconfig"
 
+source "drivers/motor/Kconfig"
+
 source "drivers/block/Kconfig"
 
 # misc before ide - BLK_DEV_SGIIOC4 depends on SGI_IOC4
@@ -185,5 +187,13 @@ source "drivers/sensors/Kconfig"
 source "drivers/phy/Kconfig"
 
 source "drivers/soc/Kconfig"
+
+source "drivers/battery/Kconfig"
+
+source "drivers/fingerprint/Kconfig"
+
+source "drivers/sensorhub/Kconfig"
+
+source "drivers/secfilter/Kconfig"
 
 endmenu

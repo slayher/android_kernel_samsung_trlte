@@ -2385,7 +2385,6 @@ struct cfg80211_ops {
  *	responds to probe-requests in hardware.
  * @WIPHY_FLAG_OFFCHAN_TX: Device supports direct off-channel TX.
  * @WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL: Device supports remain-on-channel call.
- * @WIPHY_FLAG_DFS_OFFLOAD: The driver handles all the DFS related operations.
  */
 enum wiphy_flags {
 	WIPHY_FLAG_CUSTOM_REGULATORY		= BIT(0),
@@ -2409,7 +2408,6 @@ enum wiphy_flags {
 	WIPHY_FLAG_AP_PROBE_RESP_OFFLOAD	= BIT(19),
 	WIPHY_FLAG_OFFCHAN_TX			= BIT(20),
 	WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL	= BIT(21),
-	WIPHY_FLAG_DFS_OFFLOAD                  = BIT(22)
 };
 
 /**
@@ -3805,8 +3803,8 @@ void __cfg80211_send_event_skb(struct sk_buff *skb, gfp_t gfp);
 static inline struct sk_buff *
 cfg80211_vendor_cmd_alloc_reply_skb(struct wiphy *wiphy, int approxlen)
 {
-	return __cfg80211_alloc_reply_skb(wiphy, NL80211_CMD_VENDOR,
-					  NL80211_ATTR_VENDOR_DATA, approxlen);
+	return __cfg80211_alloc_reply_skb(wiphy, NL80211_CMD_TESTMODE,
+					  NL80211_ATTR_TESTDATA, approxlen);
 }
 
 /**
@@ -4452,6 +4450,7 @@ void cfg80211_crit_proto_stopped(struct wireless_dev *wdev, gfp_t gfp);
  * @gfp: context flags
  */
 void cfg80211_ap_stopped(struct net_device *netdev, gfp_t gfp);
+
 /**
  * cfg80211_is_gratuitous_arp_unsolicited_na - packet is grat. ARP/unsol. NA
  * @skb: the input packet, must be an ethernet frame already

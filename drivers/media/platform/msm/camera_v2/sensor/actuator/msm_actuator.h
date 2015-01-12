@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,7 +20,6 @@
 #include "msm_camera_i2c.h"
 #include "msm_camera_dt_util.h"
 #include "msm_camera_io_util.h"
-
 
 #define DEFINE_MSM_MUTEX(mutexname) \
 	static struct mutex mutexname = __MUTEX_INITIALIZER(mutexname)
@@ -55,7 +54,6 @@ struct msm_actuator_func_tbl {
 			int16_t);
 	int32_t (*actuator_set_position)(struct msm_actuator_ctrl_t *,
 		struct msm_actuator_set_position_t *);
-	int32_t (*actuator_park_lens)(struct msm_actuator_ctrl_t *);
 };
 
 struct msm_actuator {
@@ -102,9 +100,17 @@ struct msm_actuator_ctrl_t {
 	uint32_t subdev_id;
 	enum msm_actuator_state_t actuator_state;
 	struct msm_actuator_vreg vreg_cfg;
-	uint32_t valid_position;
-	struct park_lens_data_t park_lens;
-	uint32_t max_code_size;
+	struct msm_camera_gpio_conf *gpio_conf;
+	bool is_camera_run;
 };
 
+struct remove_af_noise {
+	void *af_pdata;
+	int16_t (*af_func)(void *, bool);
+};
+
+static struct remove_af_noise af_sensor_interface = {
+	.af_pdata = NULL,
+	.af_func = NULL,
+};
 #endif

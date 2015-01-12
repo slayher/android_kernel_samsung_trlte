@@ -415,6 +415,8 @@ show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
 show_one(scaling_cur_freq, cur);
+show_one(cpu_utilization, util);
+show_one(cpu_load, load_at_max);
 
 static int cpufreq_set_policy(struct cpufreq_policy *policy,
 				struct cpufreq_policy *new_policy);
@@ -630,6 +632,8 @@ cpufreq_freq_attr_ro(scaling_cur_freq);
 cpufreq_freq_attr_ro(bios_limit);
 cpufreq_freq_attr_ro(related_cpus);
 cpufreq_freq_attr_ro(affected_cpus);
+cpufreq_freq_attr_ro(cpu_utilization);
+cpufreq_freq_attr_ro(cpu_load);
 cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
@@ -641,6 +645,8 @@ static struct attribute *default_attrs[] = {
 	&cpuinfo_transition_latency.attr,
 	&scaling_min_freq.attr,
 	&scaling_max_freq.attr,
+	&cpu_utilization.attr,
+	&cpu_load.attr,
 	&affected_cpus.attr,
 	&related_cpus.attr,
 	&scaling_governor.attr,
@@ -868,7 +874,8 @@ static int cpufreq_add_policy_cpu(struct cpufreq_policy *policy,
 	if (has_target()) {
 		ret = __cpufreq_governor(policy, CPUFREQ_GOV_STOP);
 		if (ret) {
-			pr_err("%s: Failed to stop governor\n", __func__);
+			pr_err("%s: Failed to stop governor for CPU%u, policy CPU%u\n",
+			       __func__, cpu, policy->cpu);
 			return ret;
 		}
 	}
@@ -886,7 +893,8 @@ static int cpufreq_add_policy_cpu(struct cpufreq_policy *policy,
 	if (has_target()) {
 		if ((ret = __cpufreq_governor(policy, CPUFREQ_GOV_START)) ||
 			(ret = __cpufreq_governor(policy, CPUFREQ_GOV_LIMITS))) {
-			pr_err("%s: Failed to start governor\n", __func__);
+			pr_err("%s: Failed to start governor for CPU%u, policy CPU%u\n",
+			       __func__, cpu, policy->cpu);
 			return ret;
 		}
 	}
@@ -1222,7 +1230,8 @@ static int __cpufreq_remove_dev_prepare(struct device *dev,
 	if (has_target()) {
 		ret = __cpufreq_governor(policy, CPUFREQ_GOV_STOP);
 		if (ret) {
-			pr_err("%s: Failed to stop governor\n", __func__);
+			pr_err("%s: Failed to stop governor for CPU%u\n",
+			       __func__, cpu);
 			return ret;
 		}
 	}
@@ -1290,8 +1299,8 @@ static int __cpufreq_remove_dev_finish(struct device *dev,
 			ret = __cpufreq_governor(policy,
 					CPUFREQ_GOV_POLICY_EXIT);
 			if (ret) {
-				pr_err("%s: Failed to exit governor\n",
-						__func__);
+				pr_err("%s: Failed to exit governor for CPU%u\n",
+						__func__, cpu);
 				return ret;
 			}
 		}
@@ -1318,8 +1327,8 @@ static int __cpufreq_remove_dev_finish(struct device *dev,
 		if (has_target()) {
 			if ((ret = __cpufreq_governor(policy, CPUFREQ_GOV_START)) ||
 					(ret = __cpufreq_governor(policy, CPUFREQ_GOV_LIMITS))) {
-				pr_err("%s: Failed to start governor\n",
-						__func__);
+				pr_err("%s: Failed to start governor for CPU%u, policy CPU%u\n",
+						__func__, cpu, policy->cpu);
 				return ret;
 			}
 		}
@@ -1385,8 +1394,10 @@ static void cpufreq_out_of_sync(unsigned int cpu, unsigned int old_freq,
 	policy = per_cpu(cpufreq_cpu_data, cpu);
 	read_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
-	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
-	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
+	if (policy != NULL) {
+		cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
+		cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
+	}
 }
 
 /**
@@ -1439,7 +1450,7 @@ static unsigned int __cpufreq_get(unsigned int cpu)
 	struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
 	unsigned int ret_freq = 0;
 
-	if (!cpufreq_driver->get)
+	if (!cpufreq_driver->get || policy == 0)
 		return ret_freq;
 
 	ret_freq = cpufreq_driver->get(cpu);
@@ -1586,6 +1597,24 @@ const char *cpufreq_get_current_driver(void)
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(cpufreq_get_current_driver);
+
+/**
+ * cpufreq_notify_utilization - notify CPU userspace about CPU utilization
+ * change
+ *
+ * This function is called everytime the CPU load is evaluated by the
+ * ondemand governor. It notifies userspace of cpu load changes via sysfs.
+ */
+void cpufreq_notify_utilization(struct cpufreq_policy *policy,
+		unsigned int util)
+{
+	if (policy) {
+		policy->util = util;
+
+		if (policy->util >= MIN_CPU_UTIL_NOTIFY)
+			sysfs_notify(&policy->kobj, NULL, "cpu_utilization");
+	}
+}
 
 /*********************************************************************
  *                     NOTIFIER LISTS INTERFACE                      *

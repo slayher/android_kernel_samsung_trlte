@@ -502,8 +502,12 @@ int adm_get_params(int port_id, uint32_t module_id, uint32_t param_id,
 		goto adm_get_param_return;
 	}
 	if (params_data) {
-		for (i = 0; i < adm_get_parameters[0]; i++)
-			params_data[i] = adm_get_parameters[1+i];
+		if (module_id != 0x10001050)
+			for (i = 0; i < adm_get_parameters[0]; i++)
+				params_data[i] = adm_get_parameters[1+i];
+		else
+				params_data[0] = adm_get_parameters[1];
+
 	}
 	rc = 0;
 adm_get_param_return:
@@ -1244,7 +1248,11 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 
 		open.topology_id = topology;
 		if ((open.topology_id == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
-			(open.topology_id == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY))
+			(open.topology_id == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
+		   	 (open.topology_id == VPM_TX_SM_LVVE_COPP_TOPOLOGY) ||
+			/* LVVE for Barge-in */
+			(open.topology_id == 0x1000BFF0) ||
+			(open.topology_id == 0x1000BFF1))
 				rate = 16000;
 
 		if (perf_mode == ULTRA_LOW_LATENCY_PCM_MODE) {

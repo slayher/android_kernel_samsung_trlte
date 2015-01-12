@@ -100,7 +100,7 @@ static int sysmon_send_hsic(struct sysmon_subsys *ss, const char *tx_buf,
 	int ret;
 	size_t actual_len;
 
-	pr_debug("Sending HSIC message: %s\n", tx_buf);
+	pr_info("Sending HSIC message: %s\n", tx_buf);
 	ret = hsic_sysmon_write(HSIC_SYSMON_DEV_EXT_MODEM,
 				tx_buf, len, TIMEOUT_MS);
 	if (ret)

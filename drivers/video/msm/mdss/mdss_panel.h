@@ -66,6 +66,18 @@ enum {
 };
 
 enum {
+	MDSS_PANEL_POWER_OFF = 0,
+	MDSS_PANEL_POWER_ON,
+	MDSS_PANEL_POWER_DOZE,
+};
+
+enum {
+	MDSS_PANEL_BLANK_BLANK = 0,
+	MDSS_PANEL_BLANK_UNBLANK,
+	MDSS_PANEL_BLANK_LOW_POWER,
+};
+
+enum {
 	MODE_GPIO_NOT_VALID = 0,
 	MODE_GPIO_HIGH,
 	MODE_GPIO_LOW,
@@ -150,10 +162,19 @@ enum mdss_intf_events {
 	MDSS_EVENT_CONT_SPLASH_FINISH,
 	MDSS_EVENT_PANEL_UPDATE_FPS,
 	MDSS_EVENT_FB_REGISTERED,
+	MDSS_EVENT_FRAME_UPDATE,
 	MDSS_EVENT_PANEL_CLK_CTRL,
 	MDSS_EVENT_DSI_CMDLIST_KOFF,
+	MDSS_EVENT_MDNIE_DEFAULT_UPDATE,
 	MDSS_EVENT_ENABLE_PARTIAL_ROI,
 	MDSS_EVENT_DSI_STREAM_SIZE,
+#if defined(CONFIG_FB_MSM_MIPI_SAMSUNG_OCTA_CMD_FHD_FA2_PT_PANEL)
+	MDSS_EVENT_TE_UPDATE,
+	MDSS_EVENT_TE_UPDATE2,
+	MDSS_EVENT_TE_SET,
+	MDSS_EVENT_TE_RESTORE,
+#endif
+	MDSS_EVENT_READ_LDI_STATUS
 };
 
 struct lcd_panel_info {
@@ -294,6 +315,8 @@ struct mdss_panel_info {
 	u32 yres;
 	u32 physical_width;
 	u32 physical_height;
+	u32 width;
+	u32 height;
 	u32 bpp;
 	u32 type;
 	u32 wait_cycle;
@@ -310,8 +333,17 @@ struct mdss_panel_info {
 	u32 out_format;
 	u32 rst_seq[MDSS_DSI_RST_SEQ_LEN];
 	u32 rst_seq_len;
+	u32 early_lcd_on;
 	u32 vic; /* video identification code */
 	struct mdss_rect roi;
+	u32 roi_x;
+	u32 roi_y;
+	u32 roi_w;
+	u32 roi_h;
+	u32 dsi_roi_x;
+	u32 dsi_roi_y;
+	u32 dsi_roi_w;
+	u32 dsi_roi_h;
 	int bklt_ctrl;	/* backlight ctrl */
 	int pwm_pmic_gpio;
 	int pwm_lpg_chan;
@@ -333,7 +365,10 @@ struct mdss_panel_info {
 	u32 partial_update_dcs_cmd_by_left;
 	u32 partial_update_roi_merge;
 	struct ion_handle *splash_ihdl;
-	u32 panel_power_on;
+	int panel_power_state;
+	int blank_state;
+
+	int dsi_on_status;
 
 	uint32_t panel_dead;
 
@@ -346,8 +381,28 @@ struct mdss_panel_info {
 	struct edp_panel_info edp;
 };
 
+struct mdss_panel_alpm_data {
+	u8 (*alpm_event) (u8 flag); /* To be delete */
+	u8 (*alpm_status) (u8 flag);
+	void (*alpm_register) (struct mdss_panel_alpm_data *alpm_data);
+};
+
+/* ALPM status flags */
+enum {
+	/* Status flags */
+	MODE_OFF = 0,		/* Mode status of ALPM off */
+	ALPM_MODE_ON,				/* Mode status of ALPM ON */
+	NORMAL_MODE_ON,			/* Normal Mode Status */
+	CHECK_CURRENT_STATUS,	/* Check Current Mode */
+	CHECK_PREVIOUS_STATUS,	/* Check Previous Mode */
+	STORE_CURRENT_STATUS,	/* Store current status to previous status */
+	CLEAR_MODE_STATUS,		/* Clear status flag as MODE_OFF */
+};
+
+
 struct mdss_panel_data {
 	struct mdss_panel_info panel_info;
+	struct mdss_panel_alpm_data alpm_data;
 	void (*set_backlight) (struct mdss_panel_data *pdata, u32 bl_level);
 	unsigned char *mmss_cc_base;
 
@@ -460,6 +515,56 @@ static inline int mdss_panel_get_htotal(struct mdss_panel_info *pinfo, bool
 		pinfo->lcdc.h_pulse_width;
 }
 
+/**
+ * mdss_panel_is_power_off: - checks if a panel is off
+ * @panel_power_state: enum identifying the power state to be checked
+ */
+static inline bool mdss_panel_is_power_off(int panel_power_state)
+{
+	return (panel_power_state == MDSS_PANEL_POWER_OFF);
+}
+
+/**
+ * mdss_panel_is_power_on_interactive: - checks if a panel is on and interactive
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * This function returns true only is the panel is fully interactive and
+ * opertaing in normal mode.
+ */
+static inline bool mdss_panel_is_power_on_interactive(int panel_power_state)
+{
+	return (panel_power_state == MDSS_PANEL_POWER_ON);
+}
+
+/**
+ * mdss_panel_is_panel_power_on: - checks if a panel is on
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * A panel is considered to be on as long as it can accept any commands
+ * or data. Sometimes it is posible to program the panel to be in a low
+ * power non-interactive state. This function returns false only if panel
+ * has explicitly been turned off.
+ */
+static inline bool mdss_panel_is_power_on(int panel_power_state)
+{
+	return !mdss_panel_is_power_off(panel_power_state);
+}
+
+/**
+ * mdss_panel_is_panel_power_on_lp: - checks if a panel is in a low power mode
+ * @pdata: pointer to the panel struct associated to the panel
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * This function returns true if the panel is in an intermediate low power
+ * state where it is still on but not fully interactive. It may still accept
+ * commands and display updates but would be operating in a low power mode.
+ */
+static inline bool mdss_panel_is_power_on_lp(int panel_power_state)
+{
+	return !mdss_panel_is_power_off(panel_power_state) &&
+		!mdss_panel_is_power_on_interactive(panel_power_state);
+}
+
 int mdss_register_panel(struct platform_device *pdev,
 	struct mdss_panel_data *pdata);
 
@@ -495,4 +600,39 @@ int mdss_panel_get_boot_cfg(void);
  * returns true if mdss is ready, else returns false.
  */
 bool mdss_is_ready(void);
+#ifdef CONFIG_FB_MSM_SAMSUNG_AMOLED_LOW_POWER_MODE
+/*
+ * This will initialize mdss_panel_alpm_data structure
+ */
+extern void mdss_dsi_panel_alpm_register(struct mdss_panel_alpm_data *alpm_data);
+
+/*
+ * This will use to enable/disable or check the status of ALPM
+ * * Description for STATUS_OR_EVENT_FLAG *
+ *	1) ALPM_MODE_ON
+ *	2) NORMAL_MODE_ON
+ *		-> Set by user using sysfs(/sys/class/lcd/panel/alpm)
+ *			The value will save to current_status
+ *	3) CHECK_CURRENT_STATUS
+ *		-> Check current status
+ *			that will return current status like ALPM_MODE_ON, NORMAL_MODE_ON or MODE_OFF
+ *	4) CHECK_PREVIOUS_STATUS
+ *		-> Check previous status that will return previous status like
+ *			 ALPM_MODE_ON, NORMAL_MODE_ON or MODE_OFF
+ *	5) STORE_CURRENT_STATUS
+ *		-> Store current status to previous status because that will use
+ *			for next turn on sequence
+ *	6) CLEAR_MODE_STATUS
+ *		-> Clear current and previous status as MODE_OFF status that can use with
+ *	* Usage *
+ *		Call function "mdss_dsi_panel_alpm_status_func(STATUS_FLAG)"
+ */
+
+extern u8 mdss_dsi_panel_alpm_status_func(u8 flag);
+#else
+static inline u8 mdss_dsi_panel_alpm_status_func(u8 flag)
+{
+	return 0;
+}
+#endif /* CONFIG_FB_MSM_SAMSUNG_AMOLED_LOW_POWER_MODE  */
 #endif /* MDSS_PANEL_H */

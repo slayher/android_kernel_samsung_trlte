@@ -42,6 +42,9 @@
 #include <mach/msm_bus_board.h>
 #include <mach/qseecomi.h>
 #include <asm/cacheflush.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 #include "qseecom_legacy.h"
 #include "qseecom_kernel.h"
 
@@ -1797,7 +1800,6 @@ static int __qseecom_load_fw(struct qseecom_dev_handle *data, char *appname)
 	ret = scm_call(SCM_SVC_TZSCHEDULER, 1,	&load_req,
 			sizeof(struct qseecom_load_app_ireq),
 			&resp, sizeof(resp));
-	kzfree(img_data);
 	if (ret) {
 		pr_err("scm_call to load failed : ret %d\n", ret);
 		ret = -EIO;
@@ -1825,6 +1827,7 @@ static int __qseecom_load_fw(struct qseecom_dev_handle *data, char *appname)
 	}
 
 loadfw_err:
+	kzfree(img_data);
 	__qseecom_disable_clk_scale_down(data);
 	if (qseecom.support_bus_scaling) {
 		mutex_lock(&qsee_bw_mutex);
@@ -3426,6 +3429,13 @@ static long qseecom_ioctl(struct file *file, unsigned cmd,
 		/* Only one client allowed here at a time */
 		mutex_lock(&app_access_lock);
 		if (qseecom.support_bus_scaling) {
+			/* register bus bw in case the client doesn't do it */
+			if (!data->mode) {
+				mutex_lock(&qsee_bw_mutex);
+				__qseecom_register_bus_bandwidth_needs(
+								data, HIGH);
+				mutex_unlock(&qsee_bw_mutex);
+			}
 			if (!data->mode) {
 				mutex_lock(&qsee_bw_mutex);
 				__qseecom_register_bus_bandwidth_needs(
@@ -4210,6 +4220,9 @@ static int qseecom_probe(struct platform_device *pdev)
 				req.qsee_cmd_id = QSEOS_APP_REGION_NOTIFICATION;
 				req.addr = resource->start;
 				req.size = resource_size(resource);
+#ifdef CONFIG_SEC_DEBUG
+				sec_debug_secure_app_addr_size(req.addr, req.size);
+#endif
 				pr_warn("secure app region addr=0x%x size=0x%x",
 							req.addr, req.size);
 			} else {
@@ -4338,8 +4351,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	mutex_lock(&qsee_bw_mutex);
 	mutex_lock(&clk_access_lock);
 
-	if (qseecom.cumulative_mode != INACTIVE &&
-		qseecom.current_mode != INACTIVE) {
+	if (qseecom.current_mode != INACTIVE) {
 		ret = msm_bus_scale_client_update_request(
 			qseecom.qsee_perf_client, INACTIVE);
 		if (ret)

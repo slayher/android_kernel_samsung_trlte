@@ -49,6 +49,7 @@
 #include <linux/msm_iommu_domains.h>
 #include <mach/memory.h>
 #include <mach/msm_memtypes.h>
+#include <soc/qcom/scm.h>
 
 #include "mdss.h"
 #include "mdss_fb.h"
@@ -62,7 +63,9 @@
 #define AXI_HALT_TIMEOUT_US	0x4000
 
 struct mdss_data_type *mdss_res;
-
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+void xlog(const char *name, u32 data0, u32 data1, u32 data2, u32 data3, u32 data4, u32 data5);
+#endif
 static int mdss_fb_mem_get_iommu_domain(void)
 {
 	return mdss_get_iommu_domain(MDSS_IOMMU_DOMAIN_UNSECURE);
@@ -82,10 +85,13 @@ struct msm_mdp_interface mdp5 = {
 #define IB_QUOTA 800000000
 #define AB_QUOTA 800000000
 
+#define MEM_PROTECT_SD_CTRL 0xF
+
 static DEFINE_SPINLOCK(mdp_lock);
 static DEFINE_MUTEX(mdp_clk_lock);
 static DEFINE_MUTEX(bus_bw_lock);
 static DEFINE_MUTEX(mdp_iommu_lock);
+static DEFINE_MUTEX(mdp_fs_idle_pc_lock);
 
 static struct mdss_panel_intf pan_types[] = {
 	{"dsi", MDSS_PANEL_INTF_DSI},
@@ -210,6 +216,9 @@ static inline int mdss_irq_dispatch(u32 hw_ndx, int irq, void *ptr)
 
 	spin_lock(&mdss_lock);
 	hw = mdss_irq_handlers[hw_ndx];
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+//	xlog(__func__, (u32)hw, hw_ndx, 0, 0, 0, 0xeeee); 
+#endif
 	spin_unlock(&mdss_lock);
 
 	if (hw)
@@ -222,6 +231,9 @@ static irqreturn_t mdss_irq_handler(int irq, void *ptr)
 {
 	struct mdss_data_type *mdata = ptr;
 	u32 intr = readl_relaxed(mdata->mdss_base + MDSS_REG_HW_INTR_STATUS);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+//	xlog(__func__,  intr, (u32) mdata, 0, 0, 0, 0xffff);
+#endif
 
 	if (!mdata)
 		return IRQ_NONE;
@@ -292,9 +304,16 @@ void mdss_enable_irq(struct mdss_hw *hw)
 			mdss_res->irq_ena, mdss_res->irq_mask);
 
 	spin_lock_irqsave(&mdss_lock, irq_flags);
+#if 0 //defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xB);
+#endif
+
 	if (mdss_res->irq_mask & ndx_bit) {
 		pr_debug("MDSS HW ndx=%d is already set, mask=%x\n",
 				hw->hw_ndx, mdss_res->irq_mask);
+#if 0 //defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+		xlog(__func__, 0, 0, 0, 0, 0, 0xFF);
+#endif
 	} else {
 		mdss_res->irq_mask |= ndx_bit;
 		if (!mdss_res->irq_ena) {
@@ -302,6 +321,9 @@ void mdss_enable_irq(struct mdss_hw *hw)
 			enable_irq(mdss_res->irq);
 		}
 	}
+#if 0 //defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xE);
+#endif
 	spin_unlock_irqrestore(&mdss_lock, irq_flags);
 }
 EXPORT_SYMBOL(mdss_enable_irq);
@@ -320,6 +342,9 @@ void mdss_disable_irq(struct mdss_hw *hw)
 			mdss_res->irq_ena, mdss_res->irq_mask);
 
 	spin_lock_irqsave(&mdss_lock, irq_flags);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xB);
+#endif
 	if (!(mdss_res->irq_mask & ndx_bit)) {
 		pr_warn("MDSS HW ndx=%d is NOT set, mask=%x, hist mask=%x\n",
 			hw->hw_ndx, mdss_res->mdp_irq_mask,
@@ -331,6 +356,9 @@ void mdss_disable_irq(struct mdss_hw *hw)
 			disable_irq_nosync(mdss_res->irq);
 		}
 	}
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xE);
+#endif
 	spin_unlock_irqrestore(&mdss_lock, irq_flags);
 }
 EXPORT_SYMBOL(mdss_disable_irq);
@@ -349,6 +377,10 @@ void mdss_disable_irq_nosync(struct mdss_hw *hw)
 			mdss_res->irq_ena, mdss_res->irq_mask);
 
 	spin_lock(&mdss_lock);
+#if 0 //defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xB);
+#endif
+
 	if (!(mdss_res->irq_mask & ndx_bit)) {
 		pr_warn("MDSS HW ndx=%d is NOT set, mask=%x, hist mask=%x\n",
 			hw->hw_ndx, mdss_res->mdp_irq_mask,
@@ -360,6 +392,9 @@ void mdss_disable_irq_nosync(struct mdss_hw *hw)
 			disable_irq_nosync(mdss_res->irq);
 		}
 	}
+#if 0 //defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__, hw->hw_ndx, ndx_bit,mdss_res->irq_mask, mdss_res->irq_ena, mdss_res->irq, 0xE);
+#endif
 	spin_unlock(&mdss_lock);
 }
 EXPORT_SYMBOL(mdss_disable_irq_nosync);
@@ -466,6 +501,23 @@ void mdss_mdp_irq_clear(struct mdss_data_type *mdata,
 	spin_unlock_irqrestore(&mdp_lock, irq_flags);
 }
 
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+int mdss_mdp_debug_bus(void)
+{
+	u32 status;
+	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
+
+	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
+	writel_relaxed(0x7001, mdata->mdp_base + 0x398);
+	writel_relaxed(0x3f1, mdata->mdp_base + 0x448);
+	status = readl_relaxed(mdata->mdp_base + 0x44c);
+	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
+	xlog(__func__,  status, 0, 0, 0, 0, 0xDDDDDD);
+
+	return 0;
+}
+EXPORT_SYMBOL(mdss_mdp_debug_bus);
+#endif
 int mdss_mdp_irq_enable(u32 intr_type, u32 intf_num)
 {
 	u32 irq;
@@ -476,6 +528,9 @@ int mdss_mdp_irq_enable(u32 intr_type, u32 intf_num)
 	irq = mdss_mdp_irq_mask(intr_type, intf_num);
 
 	spin_lock_irqsave(&mdp_lock, irq_flags);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__,mdss_res->mdp_irq_mask, irq, intr_type, intf_num, 0, 0);
+#endif
 	if (mdata->mdp_irq_mask & irq) {
 		pr_warn("MDSS MDP IRQ-0x%x is already set, mask=%x\n",
 				irq, mdata->mdp_irq_mask);
@@ -529,6 +584,9 @@ void mdss_mdp_irq_disable(u32 intr_type, u32 intf_num)
 	irq = mdss_mdp_irq_mask(intr_type, intf_num);
 
 	spin_lock_irqsave(&mdp_lock, irq_flags);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	xlog(__func__,mdss_res->mdp_irq_mask, irq, intr_type, intf_num, 0, 0);
+#endif
 	if (!(mdata->mdp_irq_mask & irq)) {
 		pr_warn("MDSS MDP IRQ-%x is NOT set, mask=%x\n",
 				irq, mdata->mdp_irq_mask);
@@ -610,7 +668,7 @@ static int mdss_mdp_clk_update(u32 clk_idx, u32 enable)
 		pr_debug("clk=%d en=%d\n", clk_idx, enable);
 		if (enable) {
 			if (clk_idx == MDSS_CLK_MDP_VSYNC)
-				clk_set_rate(clk, 19200000);
+				clk_set_rate(clk, clk_round_rate(clk, 1));
 			ret = clk_prepare_enable(clk);
 		} else {
 			clk_disable_unprepare(clk);
@@ -675,6 +733,41 @@ unsigned long mdss_mdp_get_clk_rate(u32 clk_idx)
 }
 
 /**
+ * mdss_mdp_idle_pc_restore() - Restore MDSS settings when exiting idle pc
+ *
+ * MDSS GDSC can be voted off during idle-screen usecase for MIPI DSI command
+ * mode displays, referred to as MDSS idle power collapse. Upon subsequent
+ * frame update, MDSS GDSC needs to turned back on and hw state needs to be
+ * restored.
+ */
+static int mdss_mdp_idle_pc_restore(void)
+{
+	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
+	int rc = 0;
+
+	mutex_lock(&mdp_fs_idle_pc_lock);
+	xlog(__func__,mdata->idle_pc, 0, 0, 0, 0, 0); 
+	if (!mdata->idle_pc) {
+		pr_debug("no idle pc, no need to restore\n");
+		goto end;
+	}
+
+	pr_debug("called from %pS\n", __builtin_return_address(0));
+	rc = mdss_iommu_attach(mdata);
+	if (IS_ERR_VALUE(rc)) {
+		pr_err("mdss iommu attach failed rc=%d\n", rc);
+		goto end;
+	}
+	mdss_hw_init(mdata);
+	mdss_mdp_ctl_restore();
+	mdata->idle_pc = false;
+
+end:
+	mutex_unlock(&mdp_fs_idle_pc_lock);
+	return rc;
+}
+
+/**
  * mdss_bus_bandwidth_ctrl() -- place bus bandwidth request
  * @enable:	value of enable or disable
  *
@@ -692,15 +785,14 @@ int mdss_bus_bandwidth_ctrl(int enable)
 
 	mutex_lock(&bus_bw_lock);
 	if (enable) {
-		if (bus_bw_cnt == 0) {
+		if (bus_bw_cnt == 0)
 			changed++;
-			if (!mdata->handoff_pending) {
-				rc = mdss_iommu_attach(mdata);
-				if (rc) {
-					pr_err("iommu attach failed rc=%d\n",
-									rc);
-					goto end;
-				}
+		if (!mdata->iommu_attached && !mdata->handoff_pending) {
+			rc = mdss_iommu_attach(mdata);
+			if (rc) {
+				pr_err("iommu attach failed rc=%d\n",
+					rc);
+				goto end;
 			}
 		}
 
@@ -714,6 +806,10 @@ int mdss_bus_bandwidth_ctrl(int enable)
 			pr_err("Can not be turned off\n");
 		}
 	}
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	if (changed)
+			xlog(__func__, bus_bw_cnt, changed, enable, 0, 0, 0);
+#endif
 
 	pr_debug("bw_cnt=%d changed=%d enable=%d\n",
 			bus_bw_cnt, changed, enable);
@@ -741,7 +837,7 @@ void mdss_mdp_clk_ctrl(int enable, int isr)
 {
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
 	static int mdp_clk_cnt;
-	int changed = 0, rc;
+	int changed = 0;
 
 	mutex_lock(&mdp_clk_lock);
 	if (enable) {
@@ -759,14 +855,18 @@ void mdss_mdp_clk_ctrl(int enable, int isr)
 	}
 
 	MDSS_XLOG(mdp_clk_cnt, changed, enable, current->pid);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+	if (changed)
+		xlog(__func__, mdp_clk_cnt, changed, enable, 0, 0, 0);
+#endif
 	pr_debug("%s: clk_cnt=%d changed=%d enable=%d\n",
 			__func__, mdp_clk_cnt, changed, enable);
 
 	if (changed) {
-		mdata->clk_ena = enable;
 		if (enable)
 			pm_runtime_get_sync(&mdata->pdev->dev);
 
+		mdata->clk_ena = enable;
 		mdss_mdp_clk_update(MDSS_CLK_AHB, enable);
 		mdss_mdp_clk_update(MDSS_CLK_AXI, enable);
 		mdss_mdp_clk_update(MDSS_CLK_MDP_CORE, enable);
@@ -774,15 +874,14 @@ void mdss_mdp_clk_ctrl(int enable, int isr)
 		if (mdata->vsync_ena)
 			mdss_mdp_clk_update(MDSS_CLK_MDP_VSYNC, enable);
 
-		rc = mdss_bus_bandwidth_ctrl(enable);
-		if (rc)
-			pr_err("bus bandwidth control failed rc=%d", rc);
-
 		if (!enable)
 			pm_runtime_put(&mdata->pdev->dev);
 	}
 
 	mutex_unlock(&mdp_clk_lock);
+
+	if (enable && changed)
+		mdss_mdp_idle_pc_restore();	
 }
 
 static inline int mdss_mdp_irq_clk_register(struct mdss_data_type *mdata,
@@ -1069,13 +1168,20 @@ static void mdss_hw_rev_init(struct mdss_data_type *mdata)
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 }
 
+/**
+ * mdss_hw_init() - Initialize MDSS target specific register settings
+ * @mdata: MDP private data+ *
+ * Initialize basic MDSS hardware settings based on the board specific
+ * parameters. This function does not explicitly turn on the MDP clocks
+ * and so it must be called with the MDP clocks already enabled.
+ */
+
 int mdss_hw_init(struct mdss_data_type *mdata)
 {
 	int i, j;
 	char *offset;
 	struct mdss_mdp_pipe *vig;
 
-	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
 	mdss_hw_rev_init(mdata);
 
 	/* disable hw underrun recovery */
@@ -1117,7 +1223,6 @@ int mdss_hw_init(struct mdss_data_type *mdata)
 		for (i = 0; i < mdata->nvig_pipes; i++)
 			mdss_mdp_hscl_init(&vig[i]);
 
-	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 	pr_debug("MDP hw init done\n");
 
 	return 0;
@@ -1171,6 +1276,7 @@ void mdss_mdp_footswitch_ctrl_splash(int on)
 	int ret;
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
 	if (mdata != NULL) {
+		xlog(__func__,on, 0, 0, 0, 0, 0); 
 		if (on) {
 			pr_debug("Enable MDP FS for splash.\n");
 			mdata->handoff_pending = true;
@@ -1316,12 +1422,209 @@ static int mdss_mdp_get_cmdline_config(struct platform_device *pdev)
 	return rc;
 }
 
+#if defined(CONFIG_MDP_UPSCALE_TUNNING)
+extern int sharpness;
+extern int edge_thr;
+extern int smooth_thr;
+extern int noise_thr;
+
+static char *mdp_tunning[] =
+{
+	"sharpness",
+	"edge threshold",
+	"smooth threshold",
+	"noise threshold",
+};
+
+int get_tunning(char *string)
+{
+	int value = 0;
+
+	switch(string[1])
+	{
+		case 'h': //sharpness
+			value = sharpness;
+			break;
+		case 'd': //edge
+			value = edge_thr;		
+			break;
+		case 'm': //smoth
+			value = smooth_thr;		
+			break;
+		case 'o': //noise
+			value = noise_thr;		
+			break;
+		default:
+			pr_err("Wrong features : %s\n", string);
+			break;
+	}	
+	return value;
+}
+
+int change_tunning(char *string, int value)
+{
+
+	switch(string[1])
+	{
+		case 'h': //sharpness
+			sharpness = value;
+			break;
+		case 'd': //edge
+			edge_thr = value;		
+			break;
+		case 'm': //smoth
+			smooth_thr = value;		
+			break;
+		case 'o': //noise
+			noise_thr = value;		
+			break;
+		default:
+			pr_err("Wrong features : %s\n", string);
+			break;
+	}
+	return value;
+}
+
+static ssize_t mdss_mdp_change_tunning(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	char feature[10] = {0,};
+	int i, value = 0;
+
+	if (sscanf(buf, "%s %d", &feature[0], &value) != 2)
+		pr_info("EX) echo sharpness 32 > /sys/class/graphics/fb0/mdp/tunning \n");
+	else {
+		pr_info("input %s %d\n", feature, value);		
+		if(get_tunning(feature) < 0){
+			pr_info("EX) echo sharpness 32 > /sys/class/graphics/fb0/mdp/tunning \n");			
+			for(i = 0; i < sizeof(mdp_tunning) / sizeof(mdp_tunning[0]); i++)
+				pr_info("%s is %d\n", mdp_tunning[i], get_tunning(mdp_tunning[i]));
+		} else {
+			change_tunning(feature, value);
+			pr_info("%s changed to %d \n", feature, value);
+		}	
+	}	
+
+	return size;
+}
+static ssize_t mdss_mdp_show_tunning(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int i;
+	
+	for(i = 0; i < sizeof(mdp_tunning) / sizeof(mdp_tunning[0]); i++)
+		pr_info("%s is %d\n", mdp_tunning[i], get_tunning(mdp_tunning[i]));
+
+	return 0;
+}
+
+static DEVICE_ATTR(tunning, S_IRUGO | S_IWUSR | S_IWGRP , mdss_mdp_show_tunning, mdss_mdp_change_tunning);
+#endif
+
+#if defined(CONFIG_DYNAMIC_MDP_CAP)
+static char *mdp_cap_table[] =
+{
+	"PUD(Partial Update)",
+	"SPT(Source Split)",
+	"BWC(Bandwidth Compression)",
+	"DEC(Decimination",
+	"TIL(Tile Format)",
+};
+
+int get_mdp_capibilities(char *string)
+{
+	struct mdss_mdp_ctl *ctl = mdss_res->ctl_off + 0;
+	struct msm_fb_data_type *mfd = ctl->mfd;		
+	int enable = 0;
+
+	switch(string[0])
+	{
+		case 'P':
+			enable = mfd->panel_info->partial_update_enabled;
+			break;
+		case 'S':
+			enable = mdss_res->has_src_split;
+			break;
+		case 'B':
+			enable = mdss_res->has_bwc;
+			break;
+		case 'D':
+			enable = mdss_res->has_decimation;
+			break;
+		case 'T':
+			enable = mdss_res->highest_bank_bit;
+			break;
+		default:
+			pr_err("Wrong features : %s\n", string);
+			enable = -1;
+			break;			
+	}
+	return enable;
+}
+
+int change_mdp_capibilities(char *string, int enable)
+{
+	struct mdss_mdp_ctl *ctl = mdss_res->ctl_off + 0;
+	struct msm_fb_data_type *mfd = ctl->mfd;	
+
+	switch(string[0])
+	{
+		case 'P':
+			mfd->panel_info->partial_update_enabled = enable;
+			break;
+		case 'S':
+			mdss_res->has_src_split = enable;
+			break;
+		case 'B':
+			mdss_res->has_bwc = enable;
+			break;
+		case 'D':
+			mdss_res->has_decimation = enable;
+			break;
+		case 'T':
+			mdss_res->highest_bank_bit = enable;
+			break;
+		default:
+			pr_err("Wrong features : %s\n", string);
+			enable = -1;			
+			break;
+	}
+	return enable;
+}
+
+static ssize_t mdss_mdp_change_capabilities(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	char feature[3];
+	int i, enable = 0;
+
+	if (sscanf(buf, "%s %d", &feature[0], &enable) != 2)
+		pr_info("EX) echo PUD 1 or PUD 0 > /sys/class/graphics/fb0/mdp/caps \n");
+	else {
+		pr_info("input %s %d\n", feature, enable);		
+		if(get_mdp_capibilities(feature) < 0){
+			pr_info("EX) echo PUD 1 or PUD 0 > /sys/class/graphics/fb0/mdp/caps \n");			
+			for(i = 0; i < sizeof(mdp_cap_table) / sizeof(mdp_cap_table[0]); i++)
+				pr_info("%s is %s\n", mdp_cap_table[i], get_mdp_capibilities(mdp_cap_table[i])? "enabled":"disabled");
+		} else {
+			change_mdp_capibilities(feature, enable);
+			pr_info("%s changed to %s \n", feature, enable? "enabled":"disabled");
+		}
+	}
+
+	return size;
+}
+#endif
 static ssize_t mdss_mdp_show_capabilities(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct mdss_data_type *mdata = dev_get_drvdata(dev);
 	size_t len = PAGE_SIZE;
 	int cnt = 0;
+#if defined(CONFIG_DYNAMIC_MDP_CAP)		
+	struct mdss_mdp_ctl *ctl = mdata->ctl_off + 0;
+	struct msm_fb_data_type *mfd = ctl->mfd;		
+#endif
 
 #define SPRINT(fmt, ...) \
 		(cnt += scnprintf(buf + cnt, len - cnt, fmt, ##__VA_ARGS__))
@@ -1353,15 +1656,26 @@ static ssize_t mdss_mdp_show_capabilities(struct device *dev,
 		SPRINT(" non_scalar_rgb");
 	if (mdata->has_src_split)
 		SPRINT(" src_split");
+#if defined(CONFIG_DYNAMIC_MDP_CAP)	
+	if (mfd->panel_info->partial_update_enabled)
+		SPRINT(" partial_update");		
+#endif
 	SPRINT("\n");
 
 	return cnt;
 }
 
+#if !defined(CONFIG_DYNAMIC_MDP_CAP)
 static DEVICE_ATTR(caps, S_IRUGO, mdss_mdp_show_capabilities, NULL);
+#else
+static DEVICE_ATTR(caps, S_IRUGO | S_IWUSR | S_IWGRP , mdss_mdp_show_capabilities, mdss_mdp_change_capabilities);
+#endif
 
 static struct attribute *mdp_fs_attrs[] = {
 	&dev_attr_caps.attr,
+#if defined(CONFIG_MDP_UPSCALE_TUNNING)		
+	&dev_attr_tunning.attr,
+#endif
 	NULL
 };
 
@@ -1404,6 +1718,8 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, mdata);
 	mdss_res = mdata;
 	mutex_init(&mdata->reg_lock);
+	atomic_set(&mdata->sd_client_count, 0);
+	atomic_set(&mdata->active_intf_cnt, 0);
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mdp_phys");
 	if (!res) {
@@ -2423,6 +2739,7 @@ static int mdss_mdp_parse_dt_ad_cfg(struct platform_device *pdev)
 	mdata->nad_cfgs = mdss_mdp_parse_dt_prop_len(pdev, "qcom,mdss-ad-off");
 
 	if (mdata->nad_cfgs == 0) {
+		pr_info("SS is not using assertive display\n");
 		mdata->ad_cfgs = NULL;
 		return 0;
 	}
@@ -2641,19 +2958,30 @@ vreg_set_voltage_fail:
 	return rc;
 }
 
+/**
+ * mdss_mdp_footswitch_ctrl() - Disable/enable MDSS GDSC and CX/Batfet rails
+ * @mdata: MDP private data
+ * @on: 1 to turn on footswitch, 0 to turn off footswitch
+ *
+ * When no active references to the MDP device node and it's child nodes are
+ * held, MDSS GDSC can be turned off. However, any any panels are still
+ * active (but likely in an idle state), the vote for the CX and the batfet
+ * rails should not be released.
+ */
 static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 {
 	int ret;
+	int active_cnt = 0;
 
 	if (!mdata->fs)
 		return;
 
 	if (on) {
-		pr_debug("Enable MDP FS\n");
 		if (!mdata->fs_ena) {
+			pr_debug("Enable MDP FS\n");
 			ret = regulator_enable(mdata->fs);
 			if (ret)
-				pr_err("Footswitch failed to enable\n");
+				pr_warn("Footswitch failed to enable\n");
 			if (!mdata->idle_pc) {
 				mdss_mdp_cx_ctrl(mdata, true);
 				mdss_mdp_batfet_ctrl(mdata, true);
@@ -2661,51 +2989,46 @@ static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 		}
 		mdata->fs_ena = true;
 	} else {
-		pr_debug("Disable MDP FS\n");
 		mdss_iommu_dettach(mdata);
 		if (mdata->fs_ena) {
-			regulator_disable(mdata->fs);
-			if (!mdata->idle_pc) {
+			pr_debug("Disable MDP FS\n");
+			active_cnt = atomic_read(&mdata->active_intf_cnt);
+			if (active_cnt != 0) {
+				/*
+				 * Turning off GDSC while overlays are still
+				 * active.
+				 */
+				mdata->idle_pc = true;
+				pr_debug("idle pc. active overlays=%d\n",
+					active_cnt);
+			} else {
 				mdss_mdp_cx_ctrl(mdata, false);
 				mdss_mdp_batfet_ctrl(mdata, false);
 			}
+			regulator_disable(mdata->fs);
 		}
 		mdata->fs_ena = false;
 	}
 }
 
-/**
- * mdss_mdp_footswitch_ctrl_idle_pc() - MDSS GDSC control with idle power collapse
- * @on: 1 to turn on footswitch, 0 to turn off footswitch
- * @dev: framebuffer device node
- *
- * MDSS GDSC can be voted off during idle-screen usecase for MIPI DSI command
- * mode displays. Upon subsequent frame update, MDSS GDSC needs to turned back
- * on and hw state needs to be restored. It returns error if footswitch control
- * API fails.
- */
-int mdss_mdp_footswitch_ctrl_idle_pc(int on, struct device *dev)
+int mdss_mdp_secure_display_ctrl(unsigned int enable)
 {
-	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
-	int rc = 0;
+	struct sd_ctrl_req {
+		unsigned int enable;
+	} __attribute__ ((__packed__)) request;
+	unsigned int resp = -1;
+	int ret = 0;
 
-	pr_debug("called on=%d\n", on);
-	if (on) {
-		pm_runtime_get_sync(dev);
-		rc = mdss_iommu_attach(mdata);
-		if (rc) {
-			pr_err("mdss iommu attach failed rc=%d\n", rc);
-			goto end;
-		}
-		mdss_hw_init(mdata);
-		mdata->idle_pc = false;
-	} else {
-		mdata->idle_pc = true;
-		pm_runtime_put_sync(dev);
-	}
+	request.enable = enable;
 
-end:
-	return rc;
+	ret = scm_call(SCM_SVC_MP, MEM_PROTECT_SD_CTRL,
+		&request, sizeof(request), &resp, sizeof(resp));
+	pr_debug("scm_call MEM_PROTECT_SD_CTRL(%u): ret=%d, resp=%x",
+				enable, ret, resp);
+	if (ret)
+		return ret;
+
+	return resp;
 }
 
 static inline int mdss_mdp_suspend_sub(struct mdss_data_type *mdata)
@@ -2752,6 +3075,15 @@ static int mdss_mdp_pm_resume(struct device *dev)
 
 	dev_dbg(dev, "display pm resume\n");
 
+	/*
+	 * It is possible that the runtime status of the mdp device may
+	 * have been active when the system was suspended. Reset the runtime
+	 * status to suspended state after a complete system resume.
+	 */
+	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
+	pm_runtime_enable(dev);
+
 	return mdss_mdp_resume_sub(mdata);
 }
 #endif
@@ -2785,6 +3117,15 @@ static int mdss_mdp_resume(struct platform_device *pdev)
 #define mdss_mdp_resume NULL
 #endif
 
+void msm_fb_iommu_page_fault(void)
+{
+       struct mdss_data_type *mdata = mdss_mdp_get_mdata();
+       pr_info("%s %d\n",__func__, mdata->iommu_attached);
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+       xlog(__func__, mdata->iommu_attached, 0, 0, 0, 0, 0);
+#endif
+}
+EXPORT_SYMBOL(msm_fb_iommu_page_fault);
 #ifdef CONFIG_PM_RUNTIME
 static int mdss_mdp_runtime_resume(struct device *dev)
 {
@@ -2793,7 +3134,8 @@ static int mdss_mdp_runtime_resume(struct device *dev)
 	if (!mdata)
 		return -ENODEV;
 
-	dev_dbg(dev, "pm_runtime: resuming...\n");
+	dev_dbg(dev, "pm_runtime: resuming. active overlay cnt=%d\n",
+		atomic_read(&mdata->active_intf_cnt));
 
 	/* do not resume panels when coming out of idle power collapse */
 	if (!mdata->idle_pc)
@@ -2820,17 +3162,18 @@ static int mdss_mdp_runtime_suspend(struct device *dev)
 	bool device_on = false;
 	if (!mdata)
 		return -ENODEV;
-	dev_dbg(dev, "pm_runtime: suspending...\n");
+	dev_dbg(dev, "pm_runtime: suspending. active overlay cnt=%d\n",
+		atomic_read(&mdata->active_intf_cnt));
 
 	if (mdata->clk_ena) {
 		pr_err("MDP suspend failed\n");
 		return -EBUSY;
 	}
 
+	mdss_mdp_footswitch_ctrl(mdata, false);
 	/* do not suspend panels when going in to idle power collapse */
 	if (!mdata->idle_pc)
 		device_for_each_child(dev, &device_on, mdss_fb_suspres_panel);
-	mdss_mdp_footswitch_ctrl(mdata, false);
 
 	return 0;
 }

@@ -20,7 +20,7 @@
 #include "mdss_mdp.h"
 #include "mdss_debug.h"
 
-#define MDSS_XLOG_ENTRY	256
+#define MDSS_XLOG_ENTRY	1024
 #define MDSS_XLOG_MAX_DATA 6
 #define MDSS_XLOG_BUF_MAX 512
 
@@ -131,6 +131,7 @@ void mdss_xlog_dump(void)
 	unsigned long rem_nsec;
 	struct tlog *log;
 	char xlog_buf[MDSS_XLOG_BUF_MAX];
+	u64 tick_backup;
 
 	if (!mdd->logd.xlog_enable)
 		return;
@@ -139,10 +140,12 @@ void mdss_xlog_dump(void)
 	i = mdss_dbg_xlog.first;
 	for (n = 0; n < MDSS_XLOG_ENTRY; n++) {
 		log = &mdss_dbg_xlog.logs[i];
-		rem_nsec = do_div(log->tick, 1000000000);
+		tick_backup = log->tick;
+		rem_nsec = do_div(tick_backup, 1000000000);
 		off = snprintf(xlog_buf, MDSS_XLOG_BUF_MAX,
-				"%-32s => [%5llu.%06lu]: ", log->name,
-					log->tick, rem_nsec / 1000);
+			"%-32s => [%5llu.%06lu]: ", log->name,
+			tick_backup, rem_nsec / 1000);
+
 		for (d_cnt = 0; d_cnt < log->data_cnt;) {
 			off += snprintf((xlog_buf + off),
 					(MDSS_XLOG_BUF_MAX - off),

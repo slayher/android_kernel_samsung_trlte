@@ -139,13 +139,22 @@ void pcie_phy_init(struct msm_pcie_dev_t *dev)
 	write_phy(dev->phy, QSERDES_COM_PLL_CP_SETI,		0x3f);
 	write_phy(dev->phy, QSERDES_COM_PLL_IP_SETP,		0x07);
 	write_phy(dev->phy, QSERDES_COM_PLL_CP_SETP,		0x03);
+
+	if(dev->rc_idx == 1) {
+		write_phy(dev->phy, QSERDES_TX_TX_EMP_POST1_LVL,		0x21);
+		write_phy(dev->phy, QSERDES_TX_TX_DRV_LVL,		0x18);
+	}
+
 	write_phy(dev->phy, QSERDES_RX_CDR_CONTROL,			0xf3);
 	write_phy(dev->phy, QSERDES_RX_CDR_CONTROL2,		0x6b);
 	write_phy(dev->phy, QSERDES_COM_RESETSM_CNTRL,		0x10);
 	write_phy(dev->phy, QSERDES_RX_RX_TERM_HIGHZ_CM_AC_COUPLE,	0x87);
 	write_phy(dev->phy, QSERDES_RX_RX_EQ_GAIN12,		0x54);
 	write_phy(dev->phy, PCIE_PHY_POWER_STATE_CONFIG1,		0xa3);
-	write_phy(dev->phy, PCIE_PHY_POWER_STATE_CONFIG2,		0xcb);
+	write_phy(dev->phy, PCIE_PHY_POWER_STATE_CONFIG2,		0x4b);
+	if(dev->rc_idx == 0) {
+		write_phy(dev->phy, QSERDES_RX_SIGDET_CNTRL,		0x50);
+	}
 	write_phy(dev->phy, QSERDES_COM_PLL_RXTXEPCLK_EN,		0x10);
 	write_phy(dev->phy, PCIE_PHY_ENDPOINT_REFCLK_DRIVE,		0x10);
 	write_phy(dev->phy, PCIE_PHY_SW_RESET,			0x00);

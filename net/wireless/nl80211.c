@@ -6020,7 +6020,9 @@ static int nl80211_dump_survey(struct sk_buff *skb,
 static bool nl80211_valid_wpa_versions(u32 wpa_versions)
 {
 	return !(wpa_versions & ~(NL80211_WPA_VERSION_1 |
-				  NL80211_WPA_VERSION_2));
+				  NL80211_WPA_VERSION_2 |
+/*WAPI*/
+				  NL80211_WAPI_VERSION_1 ));
 }
 
 static int nl80211_authenticate(struct sk_buff *skb, struct genl_info *info)
@@ -6750,8 +6752,6 @@ static int nl80211_testmode_dump(struct sk_buff *skb,
 	return err;
 }
 
-#endif
-
 struct sk_buff *__cfg80211_alloc_event_skb(struct wiphy *wiphy,
 					   enum nl80211_commands cmd,
 					   enum nl80211_attrs attr,
@@ -6799,7 +6799,7 @@ void __cfg80211_send_event_skb(struct sk_buff *skb, gfp_t gfp)
 			nl80211_testmode_mcgrp.id, gfp);
 }
 EXPORT_SYMBOL(__cfg80211_send_event_skb);
-
+#endif
 
 static int nl80211_connect(struct sk_buff *skb, struct genl_info *info)
 {
@@ -7399,7 +7399,18 @@ static int nl80211_tx_mgmt(struct sk_buff *skb, struct genl_info *info)
 		 * of time (10ms) but no longer than the driver supports.
 		 */
 		if (wait < NL80211_MIN_REMAIN_ON_CHANNEL_TIME ||
+#if defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)
+			/* To reduce GAS initial request / response time, 
+			 * we modified the Broadcom official driver structure 
+			 * ex) wait[31:25] -> retry counts until receiving ACK 
+			 *     wait[24:0] -> wait time
+			 */
+			(wait & 0x00ffffff) > rdev->wiphy.max_remain_on_channel_duration)
+#else
 		    wait > rdev->wiphy.max_remain_on_channel_duration)
+#endif
 			return -EINVAL;
 
 	}
@@ -8505,8 +8516,8 @@ static int nl80211_crit_protocol_stop(struct sk_buff *skb,
 static int nl80211_vendor_cmd(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
-	struct wireless_dev *wdev =
-		__cfg80211_wdev_from_attrs(genl_info_net(info), info->attrs);
+	struct net_device *dev = info->user_ptr[1];
+	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	int i, err;
 	u32 vid, subcmd;
 
@@ -8560,12 +8571,8 @@ static int nl80211_vendor_cmd(struct sk_buff *skb, struct genl_info *info)
 			len = nla_len(info->attrs[NL80211_ATTR_VENDOR_DATA]);
 		}
 
-		rdev->cur_cmd_info = info;
-		err = rdev->wiphy.vendor_commands[i].doit(&rdev->wiphy, wdev,
+		return rdev->wiphy.vendor_commands[i].doit(&rdev->wiphy, wdev,
 							   data, len);
-		rdev->cur_cmd_info = NULL;
-
-		return err;
 	}
 
 	return -EOPNOTSUPP;
@@ -8582,8 +8589,8 @@ struct sk_buff *__cfg80211_alloc_reply_skb(struct wiphy *wiphy,
 		return NULL;
 
 	return __cfg80211_alloc_vendor_skb(rdev, approxlen,
-					   rdev->cur_cmd_info->snd_portid,
-					   rdev->cur_cmd_info->snd_seq,
+					   0,
+					   0,
 					   cmd, attr, NULL, GFP_KERNEL);
 }
 EXPORT_SYMBOL(__cfg80211_alloc_reply_skb);
@@ -9366,8 +9373,7 @@ static struct genl_ops nl80211_ops[] = {
 		.doit = nl80211_vendor_cmd,
 		.policy = nl80211_policy,
 		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_WIPHY |
-				  NL80211_FLAG_NEED_RTNL,
+		.internal_flags = NL80211_FLAG_NEED_RTNL,
 	},
 	{
 		.cmd = NL80211_CMD_SET_QOS_MAP,

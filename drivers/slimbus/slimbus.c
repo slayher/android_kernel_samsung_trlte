@@ -1277,6 +1277,7 @@ static int connect_port_ch(struct slim_controller *ctrl, u8 ch, u32 ph,
 	buf[1] = ctrl->chans[ch].chan;
 	if (la == SLIM_LA_MANAGER)
 		ctrl->ports[pn].flow = flow;
+	pr_err("CODEC connect MC:0x %x, port:%x", mc, pn); 
 	ret = slim_processtxn(ctrl, SLIM_MSG_DEST_LOGICALADDR, mc, 0,
 				SLIM_MSG_MT_CORE, NULL, buf, 2, 6, NULL, la,
 				NULL);
@@ -1293,6 +1294,7 @@ static int disconnect_port_ch(struct slim_controller *ctrl, u32 ph)
 	u8 pn = (u8)SLIM_HDL_TO_PORT(ph);
 
 	mc = SLIM_MSG_MC_DISCONNECT_PORT;
+	pr_err("CODEC disconnect port:%x", pn);
 	ret = slim_processtxn(ctrl, SLIM_MSG_DEST_LOGICALADDR, mc, 0,
 				SLIM_MSG_MT_CORE, NULL, &pn, 1, 5,
 				NULL, la, NULL);
@@ -1472,7 +1474,7 @@ EXPORT_SYMBOL_GPL(slim_disconnect_ports);
  * Client will call slim_port_get_xfer_status to get error and/or number of
  * bytes transferred if used asynchronously.
  */
-int slim_port_xfer(struct slim_device *sb, u32 ph, u8 *iobuf, u32 len,
+int slim_port_xfer(struct slim_device *sb, u32 ph, phys_addr_t iobuf, u32 len,
 				struct completion *comp)
 {
 	struct slim_controller *ctrl = sb->ctrl;
@@ -1502,7 +1504,7 @@ EXPORT_SYMBOL_GPL(slim_port_xfer);
  * processed from the multiple transfers.
  */
 enum slim_port_err slim_port_get_xfer_status(struct slim_device *sb, u32 ph,
-			u8 **done_buf, u32 *done_len)
+			phys_addr_t *done_buf, u32 *done_len)
 {
 	struct slim_controller *ctrl = sb->ctrl;
 	u8 pn = SLIM_HDL_TO_PORT(ph);
@@ -1515,7 +1517,7 @@ enum slim_port_err slim_port_get_xfer_status(struct slim_device *sb, u32 ph,
 	 */
 	if (la != SLIM_LA_MANAGER) {
 		if (done_buf)
-			*done_buf = NULL;
+			*done_buf = 0;
 		if (done_len)
 			*done_len = 0;
 		return SLIM_P_NOT_OWNED;
@@ -2818,7 +2820,7 @@ int slim_reconfigure_now(struct slim_device *sb)
 		ret = slim_processtxn(ctrl, SLIM_MSG_DEST_BROADCAST,
 			SLIM_MSG_MC_NEXT_SUBFRAME_MODE, 0, SLIM_MSG_MT_CORE,
 			NULL, (u8 *)&subframe, 1, 4, NULL, 0, NULL);
-		dev_dbg(&ctrl->dev, "sending subframe:%d,ret:%d\n",
+			pr_err("%s:sending subframe:%d,ret:%d\n",__func__, 
 				(int)wbuf[0], ret);
 	}
 	if (!ret && clkgear != ctrl->clkgear) {
@@ -2826,7 +2828,7 @@ int slim_reconfigure_now(struct slim_device *sb)
 		ret = slim_processtxn(ctrl, SLIM_MSG_DEST_BROADCAST,
 			SLIM_MSG_MC_NEXT_CLOCK_GEAR, 0, SLIM_MSG_MT_CORE,
 			NULL, wbuf, 1, 4, NULL, 0, NULL);
-		dev_dbg(&ctrl->dev, "sending clkgear:%d,ret:%d\n",
+		pr_err("%s:sending clkgear:%d,ret:%d\n",__func__,
 				(int)wbuf[0], ret);
 	}
 	if (ret)
@@ -2950,7 +2952,7 @@ int slim_reconfigure_now(struct slim_device *sb)
 	ret = slim_processtxn(ctrl, SLIM_MSG_DEST_BROADCAST,
 			SLIM_MSG_MC_RECONFIGURE_NOW, 0, SLIM_MSG_MT_CORE, NULL,
 			NULL, 0, 3, NULL, 0, NULL);
-	dev_dbg(&ctrl->dev, "reconfig now:ret:%d\n", ret);
+	pr_err("%s:reconfig now:ret:%d\n",__func__, ret); 
 	if (!ret) {
 		ctrl->sched.subfrmcode = subframe;
 		ctrl->clkgear = clkgear;
@@ -3016,7 +3018,7 @@ int slim_control_ch(struct slim_device *sb, u16 chanh,
 		u8 add_mark_removal  = true;
 
 		slc = &ctrl->chans[chan];
-		dev_dbg(&ctrl->dev, "chan:%d,ctrl:%d,def:%d", chan, chctrl,
+		pr_err("%s:chan:%d,ctrl:%d,def:%d",__func__, chan, chctrl, 
 					slc->def);
 		if (slc->state < SLIM_CH_DEFINED) {
 			ret = -ENOTCONN;

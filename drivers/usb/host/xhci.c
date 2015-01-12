@@ -33,6 +33,8 @@
 #define DRIVER_AUTHOR "Sarah Sharp"
 #define DRIVER_DESC "'eXtensible' Host Controller (xHC) Driver"
 
+extern void xhci_dump_phy_info(struct xhci_hcd *xhci);
+
 /* Some 0.95 hardware can't handle the chain bit on a Link TRB being cleared */
 static int link_quirk;
 module_param(link_quirk, int, S_IRUGO | S_IWUSR);
@@ -100,6 +102,8 @@ void xhci_quiesce(struct xhci_hcd *xhci)
 int xhci_halt(struct xhci_hcd *xhci)
 {
 	int ret;
+	struct usb_hcd *hcd = xhci_to_hcd(xhci);
+
 	xhci_dbg(xhci, "// Halt the HC\n");
 	xhci_quiesce(xhci);
 
@@ -108,9 +112,14 @@ int xhci_halt(struct xhci_hcd *xhci)
 	if (!ret) {
 		xhci->xhc_state |= XHCI_STATE_HALTED;
 		xhci->cmd_ring_state = CMD_RING_STATE_STOPPED;
-	} else
+	} else {
 		xhci_warn(xhci, "Host not halted after %u microseconds.\n",
 				XHCI_MAX_HALT_USEC);
+
+		if (hcd->driver->halt_failed_cleanup)
+			hcd->driver->halt_failed_cleanup(hcd);
+	}
+
 	return ret;
 }
 
@@ -2642,6 +2651,7 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 				ctx_change == 0 ?
 					"configure endpoint" :
 					"evaluate context");
+		xhci_dump_phy_info(xhci);
 		/* cancel the configure endpoint command */
 		ret = xhci_cancel_cmd(xhci, command, cmd_trb);
 		if (ret < 0)
@@ -3418,6 +3428,7 @@ int xhci_discover_or_reset_device(struct usb_hcd *hcd, struct usb_device *udev)
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for reset device command\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+		xhci_dump_phy_info(xhci);
 		spin_lock_irqsave(&xhci->lock, flags);
 		/* The timeout might have raced with the event ring handler, so
 		 * only delete from the list if the item isn't poisoned.
@@ -3513,6 +3524,8 @@ void xhci_free_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	u32 state;
 	int i, ret;
 
+	xhci_dump_phy_info(xhci);
+
 	ret = xhci_check_args(hcd, udev, NULL, 0, true, __func__);
 	/* If the host is halted due to driver unload, we still need to free the
 	 * device.
@@ -3606,6 +3619,7 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for a slot\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+		xhci_dump_phy_info(xhci);
 		/* cancel the enable slot request */
 		return xhci_cancel_cmd(xhci, NULL, cmd_trb);
 	}
@@ -3728,6 +3742,7 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for address device command\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+		xhci_dump_phy_info(xhci);
 		/* cancel the address device command */
 		ret = xhci_cancel_cmd(xhci, NULL, cmd_trb);
 		if (ret < 0)

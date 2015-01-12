@@ -631,7 +631,7 @@ static int  tzdbgfs_init(struct platform_device *pdev)
 	for (i = 0; i < TZDBG_STATS_MAX; i++) {
 		tzdbg.debug_tz[i] = i;
 		dent = debugfs_create_file(tzdbg.stat[i].name,
-				S_IRUGO, dent_dir,
+				S_IRUSR, dent_dir,
 				&tzdbg.debug_tz[i], &tzdbg_fops);
 		if (dent == NULL) {
 			dev_err(&pdev->dev, "TZ debugfs_create_file failed\n");

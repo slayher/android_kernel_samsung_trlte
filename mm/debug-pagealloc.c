@@ -54,6 +54,10 @@ static bool single_bit_flip(unsigned char a, unsigned char b)
 	return error && !(error & (error - 1));
 }
 
+#ifdef CONFIG_BCMDHD_DEBUG_PAGEALLOC
+extern void dhd_page_corrupt_cb(void *addr_corrupt, size_t len);
+#endif /* CONFIG_BCMDHD_DEBUG_PAGEALLOC */
+
 static void check_poison_mem(unsigned char *mem, size_t bytes)
 {
 	static DEFINE_RATELIMIT_STATE(ratelimit, 5 * HZ, 10);
@@ -76,10 +80,16 @@ static void check_poison_mem(unsigned char *mem, size_t bytes)
 	else
 		printk(KERN_ERR "pagealloc: memory corruption\n");
 
+#ifdef CONFIG_BCMDHD_DEBUG_PAGEALLOC
+		dhd_page_corrupt_cb(start, end - start + 1);
+#endif /* CONFIG_BCMDHD_DEBUG_PAGEALLOC */
+
 	print_hex_dump(KERN_ERR, "", DUMP_PREFIX_ADDRESS, 16, 1, start,
 			end - start + 1, 1);
+#ifndef CONFIG_BCMDHD_DEBUG_PAGEALLOC
 	BUG_ON(PANIC_CORRUPTION);
 	dump_stack();
+#endif /* !CONFIG_BCMDHD_DEBUG_PAGEALLOC */
 }
 
 static void unpoison_page(struct page *page)

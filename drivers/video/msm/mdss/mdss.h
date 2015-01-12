@@ -71,8 +71,6 @@ struct mdss_fudge_factor {
 struct mdss_perf_tune {
 	unsigned long min_mdp_clk;
 	u64 min_bus_vote;
-	u64 min_uhd_bus_vote;
-	u64 min_qhd_bus_vote;
 };
 
 #define MDSS_IRQ_SUSPEND	-1
@@ -122,6 +120,7 @@ struct mdss_data_type {
 	u32 has_bwc;
 	u32 has_decimation;
 	u32 wfd_mode;
+	atomic_t sd_client_count;
 	u8 has_wb_ad;
 	u8 has_non_scalar_rgb;
 	bool has_src_split;
@@ -157,6 +156,9 @@ struct mdss_data_type {
 	struct mdss_fudge_factor ib_factor;
 	struct mdss_fudge_factor ib_factor_overlap;
 	struct mdss_fudge_factor clk_factor;
+
+	u32 enable_bw_release;
+	u32 enable_rotator_bw_release;
 
 	struct mdss_hw_settings *hw_settings;
 
@@ -203,6 +205,7 @@ struct mdss_data_type {
 	int handoff_pending;
 	bool idle_pc;
 	struct mdss_perf_tune perf_tune;
+	atomic_t active_intf_cnt;
 };
 extern struct mdss_data_type *mdss_res;
 
@@ -227,6 +230,14 @@ void mdss_disable_irq(struct mdss_hw *hw);
 void mdss_disable_irq_nosync(struct mdss_hw *hw);
 int mdss_bus_bandwidth_ctrl(int enable);
 
+#if defined (CONFIG_FB_MSM_MDSS_DSI_DBG)
+int mdss_mdp_debug_bus(void);
+void xlog(const char *name, u32 data0, u32 data1, u32 data2, u32 data3, u32 data4, u32 data5);
+void xlog_dump(void);
+#endif
+
+int get_lcd_attached(void);
+
 static inline struct ion_client *mdss_get_ionclient(void)
 {
 	if (!mdss_res)
@@ -250,5 +261,13 @@ static inline int mdss_get_iommu_domain(u32 type)
 		return -ENODEV;
 
 	return mdss_res->iommu_map[type].domain_idx;
+}
+
+static inline int mdss_get_sd_client_cnt(void)
+{
+	if (!mdss_res)
+		return 0;
+	else
+		return atomic_read(&mdss_res->sd_client_count);
 }
 #endif /* MDSS_H */

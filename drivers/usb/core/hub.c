@@ -33,6 +33,10 @@
 
 #include "hub.h"
 
+#ifdef CONFIG_USB_HOST_NOTIFY
+#include "sec-dock.h"
+#endif
+
 /* if we are in debug mode, always announce new devices */
 #ifdef DEBUG
 #ifndef CONFIG_USB_ANNOUNCE_NEW_DEVICES
@@ -844,7 +848,7 @@ static int hub_hub_status(struct usb_hub *hub,
 				"%s failed (err = %d)\n", __func__, ret);
 	} else {
 		*status = le16_to_cpu(hub->status->hub.wHubStatus);
-		*change = le16_to_cpu(hub->status->hub.wHubChange); 
+		*change = le16_to_cpu(hub->status->hub.wHubChange);
 		ret = 0;
 	}
 	mutex_unlock(&hub->status_mutex);
@@ -1588,7 +1592,7 @@ static void hub_disconnect(struct usb_interface *intf)
 {
 	struct usb_hub *hub = usb_get_intfdata(intf);
 	struct usb_device *hdev = interface_to_usbdev(intf);
-	int i;
+	int port1;
 
 	/* Take the hub off the event list and don't let it be added again */
 	spin_lock_irq(&hub_event_lock);
@@ -1603,11 +1607,15 @@ static void hub_disconnect(struct usb_interface *intf)
 	hub->error = 0;
 	hub_quiesce(hub, HUB_DISCONNECT);
 
-	usb_set_intfdata (intf, NULL);
+	/* Avoid races with recursively_mark_NOTATTACHED() */
+	spin_lock_irq(&device_state_lock);
+	port1 = hdev->maxchild;
+	hdev->maxchild = 0;
+	usb_set_intfdata(intf, NULL);
+	spin_unlock_irq(&device_state_lock);
 
-	for (i = 0; i < hdev->maxchild; i++)
-		usb_hub_remove_port_device(hub, i + 1);
-	hub->hdev->maxchild = 0;
+	for (; port1 > 0; --port1)
+		usb_hub_remove_port_device(hub, port1);
 
 	if (hub->hdev->speed == USB_SPEED_HIGH)
 		highspeed_hubs--;
@@ -1620,6 +1628,7 @@ static void hub_disconnect(struct usb_interface *intf)
 
 	pm_suspend_ignore_children(&intf->dev, false);
 	kref_put(&hub->kref, hub_release);
+	pr_err("%s: complete\n", __func__);
 }
 
 static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
@@ -1667,8 +1676,24 @@ static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	 */
 	pm_runtime_set_autosuspend_delay(&hdev->dev, 0);
 
+#if 1
 	/* Hubs have proper suspend/resume support. */
 	usb_enable_autosuspend(hdev);
+#else
+	pr_info("%s : VID : 0x%x, PID : 0x%x, Serial: %s\n", __func__,
+			le16_to_cpu(hdev->descriptor.idVendor),
+			le16_to_cpu(hdev->descriptor.idProduct),
+			hdev->serial);
+
+	if (le16_to_cpu(hdev->descriptor.idVendor == 0x1d6b) &&
+		le16_to_cpu(hdev->descriptor.idProduct == 0x2) &&
+		strcmp(hdev->serial, "msm_hsic_host")) {
+		pr_info("%s: disable autosuspend.\n", __func__);
+	} else {
+		pr_info("%s: enable autosuspend.\n", __func__);
+		usb_enable_autosuspend(hdev);
+	}
+#endif
 
 	if (hdev->level == MAX_TOPO_LEVEL) {
 		dev_err(&intf->dev,
@@ -2047,21 +2072,29 @@ void usb_disconnect(struct usb_device **pdev)
 
 	/* Free up all the children before we remove this device */
 	for (i = 0; i < udev->maxchild; i++) {
-		if (hub && hub->ports[i]->child)
+		if (hub && hub->ports[i]->child) {
+			dev_err(&udev->dev, "%s: port num: %d\n",__func__,i);
 			usb_disconnect(&hub->ports[i]->child);
+		}
 	}
+
+#ifdef CONFIG_USB_HOST_NOTIFY
+	call_battery_notify(udev, 0);
+#endif
 
 	/* deallocate hcd/hardware state ... nuking all pending urbs and
 	 * cleaning up all state associated with the current configuration
 	 * so that the hardware is now fully quiesced.
 	 */
-	dev_dbg (&udev->dev, "unregistering device\n");
+	dev_err (&udev->dev, "%s: unregistering device\n",__func__);
 	usb_disable_device(udev, 0);
 	usb_hcd_synchronize_unlinks(udev);
 
 	if (udev->parent) {
 		struct usb_hub *hub = usb_hub_to_struct_hub(udev->parent);
 		struct usb_port	*port_dev = NULL;
+
+		dev_err(&udev->dev, "%s: remove from hub\n", __func__);
 
 		if (hub)
 			port_dev = hub->ports[udev->portnum - 1];
@@ -2084,7 +2117,9 @@ void usb_disconnect(struct usb_device **pdev)
 	 * for de-configuring the device and invoking the remove-device
 	 * notifier chain (used by usbfs and possibly others).
 	 */
+	dev_err(&udev->dev, "%s: calling device_del\n", __func__);
 	device_del(&udev->dev);
+	dev_err(&udev->dev, "%s: finished device_del\n", __func__);
 
 	/* Free the device number and delete the parent's children[]
 	 * (or root_hub) pointer.
@@ -2099,6 +2134,7 @@ void usb_disconnect(struct usb_device **pdev)
 	hub_free_dev(udev);
 
 	put_device(&udev->dev);
+	pr_info("%s: is complete\n",__func__);
 }
 
 #ifdef CONFIG_USB_ANNOUNCE_NEW_DEVICES
@@ -2443,6 +2479,9 @@ int usb_new_device(struct usb_device *udev)
 	(void) usb_create_ep_devs(&udev->dev, &udev->ep0, udev);
 	usb_mark_last_busy(udev);
 	pm_runtime_put_sync_autosuspend(&udev->dev);
+#ifdef CONFIG_USB_HOST_NOTIFY
+	call_battery_notify(udev, 1);
+#endif
 	return err;
 
 fail:
@@ -3927,7 +3966,7 @@ EXPORT_SYMBOL_GPL(usb_enable_ltm);
  * Between connect detection and reset signaling there must be a delay
  * of 100ms at least for debounce and power-settling.  The corresponding
  * timer shall restart whenever the downstream port detects a disconnect.
- * 
+ *
  * Apparently there are some bluetooth and irda-dongles and a number of
  * low-speed devices for which this debounce period may last over a second.
  * Not covered by the spec - but easy to deal with.
@@ -4127,7 +4166,7 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 		udev->tt = &hub->tt;
 		udev->ttport = port1;
 	}
- 
+
 	/* Why interleave GET_DESCRIPTOR and SET_ADDRESS this way?
 	 * Because device hardware and firmware is sometimes buggy in
 	 * this area, and this is how Linux has done it for ages.
@@ -4307,7 +4346,7 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 		udev->ep0.desc.wMaxPacketSize = cpu_to_le16(i);
 		usb_ep0_reinit(udev);
 	}
-  
+
 	retval = usb_get_device_descriptor(udev, USB_DT_DEVICE_SIZE);
 	if (retval < (signed)sizeof(udev->descriptor)) {
 		if (retval != -ENODEV)
@@ -4430,7 +4469,7 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 	int status, i;
 	unsigned unit_load;
 
-	dev_dbg (hub_dev,
+	dev_err (hub_dev,
 		"port %d, status %04x, change %04x, %s\n",
 		port1, portstatus, portchange, portspeed(hub, portstatus));
 
@@ -4593,7 +4632,7 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 				goto loop_disable;
 			}
 		}
- 
+
 		/* check for devices running slower than they could */
 		if (le16_to_cpu(udev->descriptor.bcdUSB) >= 0x0200
 				&& udev->speed == USB_SPEED_FULL
@@ -4653,7 +4692,7 @@ loop:
 			dev_err(hub_dev, "unable to enumerate USB device on port %d\n",
 					port1);
 	}
- 
+
 done:
 	hub_port_disable(hub, port1, 1);
 	if (hcd->driver->relinquish_port && !hub->hdev->parent)
@@ -4828,7 +4867,7 @@ static void hub_events(void)
 				 * EM interference sometimes causes badly
 				 * shielded USB devices to be shutdown by
 				 * the hub, this hack enables them again.
-				 * Works at least with mouse driver. 
+				 * Works at least with mouse driver.
 				 */
 				if (!(portstatus & USB_PORT_STAT_ENABLE)
 				    && !connect_change
@@ -4980,7 +5019,7 @@ static int hub_thread(void *__unused)
 				kthread_should_stop());
 	} while (!kthread_should_stop() || !list_empty(&hub_event_list));
 
-	pr_debug("%s: khubd exiting\n", usbcore_name);
+	pr_err("%s: khubd exiting\n", usbcore_name);
 	return 0;
 }
 
@@ -5204,7 +5243,7 @@ static int usb_reset_and_verify_device(struct usb_device *udev)
 
 	if (ret < 0)
 		goto re_enumerate;
- 
+
 	/* Device might have changed firmware (DFU or similar) */
 	if (descriptors_changed(udev, &descriptor)) {
 		dev_info(&udev->dev, "device firmware changed\n");
@@ -5280,7 +5319,7 @@ done:
 	usb_unlocked_enable_lpm(udev);
 	usb_enable_ltm(udev);
 	return 0;
- 
+
 re_enumerate:
 	/* LPM state doesn't matter when we're about to destroy the device. */
 	hub_port_logical_disconnect(parent_hub, port1);

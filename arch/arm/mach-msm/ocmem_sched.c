@@ -242,7 +242,7 @@ inline int ocmem_write(unsigned long val, void *at)
 inline int get_mode(int id)
 {
 	if (!check_id(id))
-		return MODE_NOT_SET;
+		return MODE_DEFAULT;
 	else
 		return ocmem_client_table[id].mode == OCMEM_PERFORMANCE ?
 							WIDE_MODE : THIN_MODE;
@@ -1564,7 +1564,7 @@ int process_free(int id, struct ocmem_handle *handle)
 		/* free the allocation */
 		rc = do_free(req);
 		if (rc < 0)
-			return -EINVAL;
+			goto free_fail;
 	}
 
 	inc_ocmem_stat(zone_of(req), NR_FREES);

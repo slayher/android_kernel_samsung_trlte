@@ -13,7 +13,10 @@
 
 #include <asm/uaccess.h>
 #include <asm/page.h>
-
+#ifdef CONFIG_LOW_ORDER_SEQ_MALLOC
+#include <linux/mm.h>
+#include <linux/vmalloc.h>
+#endif
 
 /*
  * seq_files have a buffer which can may overflow. When this happens a larger
@@ -135,9 +138,19 @@ static int traverse(struct seq_file *m, loff_t offset)
 
 Eoverflow:
 	m->op->stop(m, p);
+#ifdef CONFIG_LOW_ORDER_SEQ_MALLOC
+	is_vmalloc_addr(m->buf) ? vfree(m->buf) : kfree(m->buf);
+	m->count = 0;
+	m->size <<= 1;
+	if (m->size <= (2* PAGE_SIZE))
+		m->buf = kmalloc(m->size, GFP_KERNEL);
+	else
+		m->buf = vmalloc(m->size);
+#else
 	kfree(m->buf);
 	m->count = 0;
 	m->buf = kmalloc(m->size <<= 1, GFP_KERNEL);
+#endif
 	return !m->buf ? -ENOMEM : -EAGAIN;
 }
 
@@ -232,9 +245,19 @@ ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
 		if (m->count < m->size)
 			goto Fill;
 		m->op->stop(m, p);
+#ifdef CONFIG_LOW_ORDER_SEQ_MALLOC
+		is_vmalloc_addr(m->buf) ? vfree(m->buf) : kfree(m->buf);
+		m->count = 0;
+		m->size <<= 1;
+		if (m->size <= (2* PAGE_SIZE))
+			m->buf = kmalloc(m->size, GFP_KERNEL);
+		else
+			m->buf = vmalloc(m->size);
+#else
 		kfree(m->buf);
 		m->count = 0;
 		m->buf = kmalloc(m->size <<= 1, GFP_KERNEL);
+#endif
 		if (!m->buf)
 			goto Enomem;
 		m->version = 0;
@@ -350,7 +373,11 @@ EXPORT_SYMBOL(seq_lseek);
 int seq_release(struct inode *inode, struct file *file)
 {
 	struct seq_file *m = file->private_data;
+#ifdef CONFIG_LOW_ORDER_SEQ_MALLOC
+	is_vmalloc_addr(m->buf) ? vfree(m->buf) : kfree(m->buf);
+#else
 	kfree(m->buf);
+#endif
 	kfree(m);
 	return 0;
 }

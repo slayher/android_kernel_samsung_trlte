@@ -27,6 +27,9 @@
 #include <linux/wakelock.h>
 #include "input-compat.h"
 
+#include <linux/mm.h>
+#include <linux/vmalloc.h>
+
 struct evdev {
 	int open;
 	struct input_handle handle;
@@ -299,7 +302,7 @@ static int evdev_release(struct inode *inode, struct file *file)
 	evdev_detach_client(evdev, client);
 	if (client->use_wake_lock)
 		wake_lock_destroy(&client->wake_lock);
-	kfree(client);
+	is_vmalloc_addr(client) ? vfree(client) : kfree(client);
 
 	evdev_close_device(evdev);
 
@@ -321,10 +324,14 @@ static int evdev_open(struct inode *inode, struct file *file)
 	unsigned int bufsize = evdev_compute_buffer_size(evdev->handle.dev);
 	struct evdev_client *client;
 	int error;
+	int alloc_size = sizeof(struct evdev_client) +
+					bufsize * sizeof(struct input_event);
 
-	client = kzalloc(sizeof(struct evdev_client) +
-				bufsize * sizeof(struct input_event),
-			 GFP_KERNEL);
+	if (alloc_size < PAGE_SIZE*2)
+		client = kzalloc(alloc_size, GFP_KERNEL);
+	else 
+		client = vzalloc(alloc_size);
+
 	if (!client)
 		return -ENOMEM;
 
@@ -347,7 +354,7 @@ static int evdev_open(struct inode *inode, struct file *file)
 
  err_free_client:
 	evdev_detach_client(evdev, client);
-	kfree(client);
+	is_vmalloc_addr(client) ? vfree(client) : kfree(client);
 	return error;
 }
 
@@ -868,6 +875,36 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 						_IOC_NR(cmd) & EV_MAX, size,
 						p, compat_mode);
 
+#ifdef CONFIG_INPUT_EXPANDED_ABS
+		if ((EVIOCGABS_CHG_LIMIT(_IOC_NR(cmd)) & ~(EVIOCGABS_CHG_LIMIT(EVIOCGABS_LIMIT) - 1))
+			== EVIOCGABS_CHG_LIMIT(_IOC_NR(EVIOCGABS(0)))) {
+
+			if (!dev->absinfo)
+				return -EINVAL;
+
+			t = EVIOCGABS_CHG_LIMIT(_IOC_NR(cmd)) & (EVIOCGABS_CHG_LIMIT(EVIOCGABS_LIMIT) - 1);
+			abs = dev->absinfo[t];
+
+			if (copy_to_user(p, &abs, min_t(size_t,
+					size, sizeof(struct input_absinfo))))
+				return -EFAULT;
+
+			return 0;
+		} else if ((_IOC_NR(cmd) & ~(EVIOCGABS_LIMIT - 1)) == _IOC_NR(EVIOCGABS(0))) {
+
+			if (!dev->absinfo)
+				return -EINVAL;
+
+			t = _IOC_NR(cmd) & (EVIOCGABS_LIMIT - 1);
+			abs = dev->absinfo[t];
+
+			if (copy_to_user(p, &abs, min_t(size_t,
+					size, sizeof(struct input_absinfo))))
+				return -EFAULT;
+
+			return 0;
+		}
+#else
 		if ((_IOC_NR(cmd) & ~ABS_MAX) == _IOC_NR(EVIOCGABS(0))) {
 
 			if (!dev->absinfo)
@@ -882,6 +919,7 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 
 			return 0;
 		}
+#endif
 	}
 
 	if (_IOC_DIR(cmd) == _IOC_WRITE) {

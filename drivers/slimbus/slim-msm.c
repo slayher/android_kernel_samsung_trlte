@@ -72,6 +72,15 @@ void msm_slim_put_ctrl(struct msm_slim_ctrl *dev)
 		pm_runtime_put_sync(dev->dev);
 #endif
 }
+#if defined(CONFIG_SND_SOC_ES705)
+void msm_slim_es705_func(struct slim_device *gen0_client)
+{
+	struct msm_slim_ctrl *dev = slim_get_ctrldata(gen0_client->ctrl);
+	msm_slim_get_ctrl(dev);
+	msm_slim_put_ctrl(dev);
+}
+EXPORT_SYMBOL(msm_slim_es705_func);
+#endif
 
 irqreturn_t msm_slim_port_irq_handler(struct msm_slim_ctrl *dev, u32 pstat)
 {
@@ -305,7 +314,7 @@ void msm_dealloc_port(struct slim_controller *ctrl, u8 pn)
 }
 
 enum slim_port_err msm_slim_port_xfer_status(struct slim_controller *ctr,
-				u8 pn, u8 **done_buf, u32 *done_len)
+				u8 pn, phys_addr_t *done_buf, u32 *done_len)
 {
 	struct msm_slim_ctrl *dev = slim_get_ctrldata(ctr);
 	struct sps_iovec sio;
@@ -313,7 +322,7 @@ enum slim_port_err msm_slim_port_xfer_status(struct slim_controller *ctr,
 	if (done_len)
 		*done_len = 0;
 	if (done_buf)
-		*done_buf = NULL;
+		*done_buf = 0;
 	if (!dev->pipes[pn].connected)
 		return SLIM_P_DISCONNECT;
 	ret = sps_get_iovec(dev->pipes[pn].sps, &sio);
@@ -321,7 +330,7 @@ enum slim_port_err msm_slim_port_xfer_status(struct slim_controller *ctr,
 		if (done_len)
 			*done_len = sio.size;
 		if (done_buf)
-			*done_buf = (u8 *)sio.addr;
+			*done_buf = (phys_addr_t)sio.addr;
 	}
 	dev_dbg(dev->dev, "get iovec returned %d\n", ret);
 	return SLIM_P_INPROGRESS;
@@ -346,7 +355,7 @@ static void msm_slim_port_cb(struct sps_event_notify *ev)
 		complete(comp);
 }
 
-int msm_slim_port_xfer(struct slim_controller *ctrl, u8 pn, u8 *iobuf,
+int msm_slim_port_xfer(struct slim_controller *ctrl, u8 pn, phys_addr_t iobuf,
 			u32 len, struct completion *comp)
 {
 	struct sps_register_event sreg;
@@ -366,7 +375,7 @@ int msm_slim_port_xfer(struct slim_controller *ctrl, u8 pn, u8 *iobuf,
 		dev_dbg(dev->dev, "sps register event error:%x\n", ret);
 		return ret;
 	}
-	ret = sps_transfer_one(dev->pipes[pn].sps, (u32)iobuf, len, comp,
+	ret = sps_transfer_one(dev->pipes[pn].sps, iobuf, len, comp,
 				SPS_IOVEC_FLAG_INT);
 	dev_dbg(dev->dev, "sps submit xfer error code:%x\n", ret);
 	if (!ret) {
@@ -1255,6 +1264,8 @@ void msm_slim_qmi_exit(struct msm_slim_ctrl *dev)
 int msm_slim_qmi_power_request(struct msm_slim_ctrl *dev, bool active)
 {
 	struct slimbus_power_req_msg_v01 req;
+
+	dev_err(dev->dev, "%s: active %d\n", __func__, active);
 
 	if (active)
 		req.pm_req = SLIMBUS_PM_ACTIVE_V01;

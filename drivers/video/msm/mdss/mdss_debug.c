@@ -337,13 +337,16 @@ static const struct file_operations mdss_stat_fops = {
 static ssize_t mdss_debug_factor_write(struct file *file,
 		    const char __user *user_buf, size_t count, loff_t *ppos)
 {
-	struct mdss_fudge_factor *factor  = file->private_data;
-	u32 numer = factor->numer;
-	u32 denom = factor->denom;
+	struct mdss_fudge_factor *factor = file->private_data;
+	u32 numer;
+	u32 denom;
 	char buf[32];
 
 	if (!factor)
 		return -ENODEV;
+
+	numer = factor->numer;
+	denom = factor->denom;
 
 	if (count >= sizeof(buf))
 		return -EFAULT;
@@ -428,17 +431,18 @@ static int mdss_debugfs_cleanup(struct mdss_debug_data *mdd)
 
 static int mdss_debugfs_perf_init(struct mdss_debug_data *mdd,
 			struct mdss_data_type *mdata) {
+
 	debugfs_create_u32("min_mdp_clk", 0644, mdd->perf,
 		(u32 *)&mdata->perf_tune.min_mdp_clk);
 
 	debugfs_create_u64("min_bus_vote", 0644, mdd->perf,
 		(u64 *)&mdata->perf_tune.min_bus_vote);
 
-	debugfs_create_u64("min_uhd_bus_vote", 0644, mdd->perf,
-		(u64 *)&mdata->perf_tune.min_uhd_bus_vote);
+	debugfs_create_bool("enable_bw_release", 0644, mdd->perf,
+		(u32 *)&mdata->enable_bw_release);
 
-	debugfs_create_u64("min_qhd_bus_vote", 0644, mdd->perf,
-		(u64 *)&mdata->perf_tune.min_qhd_bus_vote);
+	debugfs_create_bool("enable_rotator_bw_release", 0644, mdd->perf,
+		(u32 *)&mdata->enable_rotator_bw_release);
 
 	debugfs_create_file("ab_factor", 0644, mdd->perf,
 		&mdata->ab_factor, &mdss_factor_fops);

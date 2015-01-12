@@ -394,7 +394,9 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 	u32			recip;
 	u32			wValue;
 	u32			wIndex;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	u32			reg;
+#endif
 	int			ret;
 	enum usb_device_state	state;
 
@@ -419,12 +421,14 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 			if (dwc->speed != DWC3_DSTS_SUPERSPEED)
 				return -EINVAL;
 
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			if (set)
 				reg |= DWC3_DCTL_INITU1ENA;
 			else
 				reg &= ~DWC3_DCTL_INITU1ENA;
 			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
+#endif
 			break;
 
 		case USB_DEVICE_U2_ENABLE:
@@ -433,12 +437,14 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 			if (dwc->speed != DWC3_DSTS_SUPERSPEED)
 				return -EINVAL;
 
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			if (set)
 				reg |= DWC3_DCTL_INITU2ENA;
 			else
 				reg &= ~DWC3_DCTL_INITU2ENA;
 			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
+#endif
 			break;
 
 		case USB_DEVICE_LTM_ENABLE:
@@ -545,7 +551,9 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	enum usb_device_state state = dwc->gadget.state;
 	u32 cfg;
 	int ret;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	u32 reg;
+#endif
 
 	dwc->start_config_issued = false;
 	cfg = le16_to_cpu(ctrl->wValue);
@@ -561,7 +569,7 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		if (cfg && (!ret || (ret == USB_GADGET_DELAYED_STATUS))) {
 			usb_gadget_set_state(&dwc->gadget,
 					USB_STATE_CONFIGURED);
-
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 			/*
 			 * Enable transition to U1/U2 state when
 			 * nothing is pending from application.
@@ -569,7 +577,7 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			reg |= (DWC3_DCTL_ACCEPTU1ENA | DWC3_DCTL_ACCEPTU2ENA);
 			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
-
+#endif
 			dwc->resize_fifos = true;
 			dev_dbg(dwc->dev, "resize fifos flag SET\n");
 		}
@@ -1026,13 +1034,16 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 {
 	u8			epnum;
 	int			ret;
+	struct dwc3_ep		*dep;
 
 	dwc->setup_packet_pending = true;
 	epnum = event->endpoint_number;
+	dep = dwc->eps[epnum];
 
 	switch (event->status) {
 	case DEPEVT_STATUS_CONTROL_DATA:
 		dev_vdbg(dwc->dev, "Control Data\n");
+		dep->dbg_ep_events.control_data++;
 
 		/*
 		 * We already have a DATA transfer in the controller's cache,
@@ -1065,6 +1076,7 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 		break;
 
 	case DEPEVT_STATUS_CONTROL_STATUS:
+		dep->dbg_ep_events.control_status++;
 		if (dwc->ep0_next_event != DWC3_EP0_NRDY_STATUS)
 			return;
 
@@ -1089,25 +1101,36 @@ void dwc3_ep0_interrupt(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
 	u8			epnum = event->endpoint_number;
+	struct dwc3_ep		*dep;
 
 	dev_dbg(dwc->dev, "%s while ep%d%s in state '%s'\n",
 			dwc3_ep_event_string(event->endpoint_event),
 			epnum >> 1, (epnum & 1) ? "in" : "out",
 			dwc3_ep0_state_string(dwc->ep0state));
 
+	dep = dwc->eps[epnum];
 	switch (event->endpoint_event) {
 	case DWC3_DEPEVT_XFERCOMPLETE:
 		dwc3_ep0_xfer_complete(dwc, event);
+		dep->dbg_ep_events.xfercomplete++;
 		break;
 
 	case DWC3_DEPEVT_XFERNOTREADY:
 		dwc3_ep0_xfernotready(dwc, event);
+		dep->dbg_ep_events.xfernotready++;
 		break;
 
 	case DWC3_DEPEVT_XFERINPROGRESS:
+		dep->dbg_ep_events.xferinprogress++;
+		break;
 	case DWC3_DEPEVT_RXTXFIFOEVT:
+		dep->dbg_ep_events.rxtxfifoevent++;
+		break;
 	case DWC3_DEPEVT_STREAMEVT:
+		dep->dbg_ep_events.streamevent++;
+		break;
 	case DWC3_DEPEVT_EPCMDCMPLT:
+		dep->dbg_ep_events.epcmdcomplete++;
 		break;
 	}
 }

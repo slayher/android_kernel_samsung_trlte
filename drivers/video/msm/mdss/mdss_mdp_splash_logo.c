@@ -189,12 +189,19 @@ void mdss_mdp_release_splash_pipe(struct msm_fb_data_type *mfd)
 int mdss_mdp_splash_cleanup(struct msm_fb_data_type *mfd,
 					bool use_borderfill)
 {
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
-	struct mdss_mdp_ctl *ctl = mdp5_data->ctl;
+	struct mdss_overlay_private *mdp5_data;
+	struct mdss_mdp_ctl *ctl;
 	int rc = 0;
 
-	if (!mfd || !mdp5_data)
+	if (!mfd)
 		return -EINVAL;
+
+	mdp5_data = mfd_to_mdp5_data(mfd);
+
+	if (!mdp5_data)
+		return -EINVAL;
+
+	ctl = mdp5_data->ctl;
 
 	if (mfd->splash_info.iommu_dynamic_attached ||
 			!mfd->panel_info->cont_splash_enabled)
@@ -234,14 +241,17 @@ int mdss_mdp_splash_cleanup(struct msm_fb_data_type *mfd,
 		mdss_mdp_handoff_cleanup_pipes(mfd, MDSS_MDP_PIPE_TYPE_DMA);
 	}
 
-	mdss_mdp_ctl_splash_finish(ctl, mdp5_data->handoff);
+	if(ctl)
+		mdss_mdp_ctl_splash_finish(ctl, mdp5_data->handoff);
 
-	if (mdp5_data->splash_mem_addr) {
-		/* Give back the reserved memory to the system */
-		memblock_free(mdp5_data->splash_mem_addr,
-					mdp5_data->splash_mem_size);
-		free_bootmem_late(mdp5_data->splash_mem_addr,
-				 mdp5_data->splash_mem_size);
+	if (!sec_debug_is_enabled()) {
+		if (mdp5_data->splash_mem_addr) {
+			/* Give back the reserved memory to the system */
+			memblock_free(mdp5_data->splash_mem_addr,
+						mdp5_data->splash_mem_size);
+			free_bootmem_late(mdp5_data->splash_mem_addr,
+					 mdp5_data->splash_mem_size);
+		}
 	}
 
 	mdss_mdp_footswitch_ctrl_splash(0);
@@ -464,13 +474,7 @@ static int mdss_mdp_splash_ctl_cb(struct notifier_block *self,
 					struct msm_fb_splash_info, notifier);
 	struct msm_fb_data_type *mfd;
 
-	if (!sinfo)
-		goto done;
-
 	mfd = container_of(sinfo, struct msm_fb_data_type, splash_info);
-
-	if (!mfd)
-		goto done;
 
 	if (event != MDP_NOTIFY_FRAME_DONE)
 		goto done;
@@ -495,13 +499,14 @@ done:
 static int mdss_mdp_splash_thread(void *data)
 {
 	struct msm_fb_data_type *mfd = data;
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
+	struct mdss_overlay_private *mdp5_data;
 	int ret = -EINVAL;
 
 	if (!mfd) {
 		pr_err("invalid input parameter\n");
 		goto end;
 	}
+	mdp5_data = mfd_to_mdp5_data(mfd);
 
 	lock_fb_info(mfd->fbi);
 	ret = fb_blank(mfd->fbi, FB_BLANK_UNBLANK);

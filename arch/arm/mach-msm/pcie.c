@@ -37,6 +37,11 @@
 #include <mach/msm_iomap.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358_MODULE)))
+#include <linux/pci_ids.h>
+#endif
 
 #include "pcie.h"
 
@@ -79,6 +84,17 @@
 #define PCIE20_PLR_IATU_LAR            0x914
 #define PCIE20_PLR_IATU_LTAR           0x918
 #define PCIE20_PLR_IATU_UTAR           0x91c
+
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+#define PCIE20_L1SUB_CONTROL2                   0x15C
+#define PCIE20_CAP_LINKCTRLSTATUS_BRCM          0xBC
+#define PCIE20_L1SUB_CONTROL1_BRCM              0x248
+#define PCIE20_L1SUB_CONTROL2_BRCM              0x24C
+#define PCIE20_DEVICE_CONTROL2_STATUS2_BRCM     0xD4
+#define PCIE20_LTR_MAX_SNOOP_LATENCY_BRCM       0x1B4
+#endif
 
 #define RD 0
 #define WR 1
@@ -200,48 +216,61 @@ static const struct msm_pcie_irq_info_t msm_pcie_irq_info[MSM_PCIE_MAX_IRQ] = {
 	{"int_wake",	0}
 };
 
+static int mdm9x35 = 1;
+static int __init get_baseband(char *str)
+{
+	if(!strncasecmp(str, "mdm2", 4)) {
+		mdm9x35 = 1;
+	} else if(!strncasecmp(str, "mdm", 3)) {
+		mdm9x35 = 0;
+	}
+	return 0;
+}
+
+__setup("androidboot.baseband=", get_baseband);
+
 int msm_pcie_get_debug_mask(void)
 {
 	return msm_pcie_debug_mask;
 }
 
 bool msm_pcie_confirm_linkup(struct msm_pcie_dev_t *dev,
-						bool check_sw_stts,
-						bool check_ep)
+		bool check_sw_stts,
+		bool check_ep)
 {
 	u32 val;
 
 	if (check_sw_stts && (dev->link_status != MSM_PCIE_LINK_ENABLED)) {
 		PCIE_DBG(dev, "PCIe: The link of RC %d is not enabled.\n",
-			dev->rc_idx);
+				dev->rc_idx);
 		return false;
 	}
 
 	if (!(readl_relaxed(dev->dm_core + 0x80) & BIT(29))) {
 		PCIE_DBG(dev, "PCIe: The link of RC %d is not up.\n",
-			dev->rc_idx);
+				dev->rc_idx);
 		return false;
 	}
 
 	val = readl_relaxed(dev->dm_core);
 	PCIE_DBG(dev, "PCIe: device ID and vender ID of RC %d are 0x%x.\n",
-		dev->rc_idx, val);
+			dev->rc_idx, val);
 	if (val == PCIE_LINK_DOWN) {
 		PCIE_ERR(dev,
-			"PCIe: The link of RC %d is not really up; device ID and vender ID of RC %d are 0x%x.\n",
-			dev->rc_idx, dev->rc_idx, val);
+				"PCIe: The link of RC %d is not really up; device ID and vender ID of RC %d are 0x%x.\n",
+				dev->rc_idx, dev->rc_idx, val);
 		return false;
 	}
 
 	if (check_ep) {
 		val = readl_relaxed(dev->conf);
 		PCIE_DBG(dev,
-			"PCIe: device ID and vender ID of EP of RC %d are 0x%x.\n",
-			dev->rc_idx, val);
+				"PCIe: device ID and vender ID of EP of RC %d are 0x%x.\n",
+				dev->rc_idx, val);
 		if (val == PCIE_LINK_DOWN) {
 			PCIE_ERR(dev,
-				"PCIe: The link of RC %d is not really up; device ID and vender ID of EP of RC %d are 0x%x.\n",
-				dev->rc_idx, dev->rc_idx, val);
+					"PCIe: The link of RC %d is not really up; device ID and vender ID of EP of RC %d are 0x%x.\n",
+					dev->rc_idx, dev->rc_idx, val);
 			return false;
 		}
 	}
@@ -277,6 +306,8 @@ void msm_pcie_cfg_recover(struct msm_pcie_dev_t *dev, bool rc)
 				i * 4, readl_relaxed(cfg + i * 4));
 		}
 	}
+
+	readl_relaxed(dev->elbi);
 }
 
 static void msm_pcie_write_mask(void __iomem *addr,
@@ -384,9 +415,10 @@ static inline int msm_pcie_oper_conf(struct pci_bus *bus, u32 devfn, int oper,
 			rc_idx, bus->number, devfn, where, size, *val, rd_val);
 	} else {
 		wr_val = (rd_val & ~mask) |
-				((*val << (8 * byte_offset)) & mask);
+			((*val << (8 * byte_offset)) & mask);
 		writel_relaxed(wr_val, config_base + word_offset);
 		wmb(); /* ensure config data is written to hardware register */
+		readl_relaxed(dev->elbi);
 
 		if (rd_val == PCIE_LINK_DOWN) {
 			PCIE_ERR(dev,
@@ -484,6 +516,41 @@ static void msm_pcie_gpio_deinit(struct msm_pcie_dev_t *dev)
 	for (i = 0; i < dev->gpio_n; i++)
 		gpio_free(dev->gpio[i].num);
 }
+
+#ifdef CONFIG_CNSS
+#if defined (CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT)
+
+extern unsigned int system_rev;
+#define GPIO_WLAN_EN 308
+
+void msm_pcie_wlan_en(bool onoff)
+{
+	if(system_rev > 3) {
+		if (gpio_request(GPIO_WLAN_EN, "WLAN_EN")) {
+			pr_err("%s: Faiiled to request gpio %d for WLAN_EN\n", __func__, GPIO_WLAN_EN);
+		} else {
+			pr_err("%s: gpio_request WLAN_EN done\n", __func__);
+		}
+
+		if (onoff) {
+			if (gpio_direction_output(GPIO_WLAN_EN, 1)) {
+				pr_err("%s: WLAN_EN failed to pull up\n", __func__);
+			}
+		} else {
+			if (gpio_direction_output(GPIO_WLAN_EN, 0)) {
+				pr_err("%s: WLAN_EN failed to pull down\n", __func__);
+			}
+		}
+
+		if (gpio_get_value(GPIO_WLAN_EN)) {
+			pr_err("%s: WLAN_EN: [%d]\n", __func__, gpio_get_value(GPIO_WLAN_EN));
+		}
+
+		gpio_free(GPIO_WLAN_EN);
+	}
+}
+#endif
+#endif
 
 int msm_pcie_vreg_init(struct msm_pcie_dev_t *dev)
 {
@@ -801,6 +868,7 @@ static void msm_pcie_config_controller(struct msm_pcie_dev_t *dev)
 		msm_pcie_write_mask(dev->dm_core + PCIE20_ACK_F_ASPM_CTRL_REG,
 					PCIE20_ACK_N_FTS,
 					dev->n_fts << 8);
+	readl_relaxed(dev->elbi);
 
 	if (dev->shadow_en) {
 		if (!dev->n_fts)
@@ -828,6 +896,84 @@ static void msm_pcie_config_l1ss(struct msm_pcie_dev_t *dev)
 		msm_pcie_write_mask(dev->parf +
 				PCIE20_PARF_SYS_CTRL, BIT(3), 0);
 
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+	if (dev->rc_idx == 0) { /* BRCM Device */
+		/* disable EP ASPM(0xbc): 0x10110140 */
+		writel_relaxed(0x140, dev->conf + PCIE20_CAP_LINKCTRLSTATUS_BRCM);
+		wmb();
+
+		/* disable RC ASPM(0x80): 0x10110040 */
+		PCIE_DBG(dev, "RC's CAP_LINKCTRLSTATUS:0x%x\n",
+			readl_relaxed(dev->dm_core + PCIE20_CAP_LINKCTRLSTATUS));
+		writel_relaxed(0x40, dev->dm_core + PCIE20_CAP_LINKCTRLSTATUS);
+		wmb();
+
+		/* RC: Set L1ss control 1 register(0x158) - Disable L1ss */
+		writel_relaxed(0xa00, dev->dm_core + PCIE20_L1SUB_CONTROL1);
+		wmb();
+
+		/* EP: Set L1ss control 1 register(0x248) - Disable L1ss */
+		writel_relaxed(0x0, dev->conf + PCIE20_L1SUB_CONTROL1_BRCM);
+		wmb();
+
+		/* RC: Set L1ss control 2 register(0x15c) */
+		writel_relaxed(0x61, dev->dm_core + PCIE20_L1SUB_CONTROL2);
+		wmb();
+
+		/* EP: Set L1ss control 2 register(0x24c) */
+		writel_relaxed(0x61, dev->conf + PCIE20_L1SUB_CONTROL2_BRCM);
+		wmb();
+
+		/* EP: Set L1ss control 1 register(0x248) - Enable L1ss */
+		writel_relaxed(0xa0f, dev->conf + PCIE20_L1SUB_CONTROL1_BRCM);
+		wmb();
+
+		/* RC: Set L1ss control 1 register(0x158) - Enable L1ss */
+		writel_relaxed(0xf, dev->dm_core + PCIE20_L1SUB_CONTROL1);
+		wmb();
+
+		/* Set RC ASPM(0x80) */
+		writel_relaxed(0x43, dev->dm_core + PCIE20_CAP_LINKCTRLSTATUS);
+		wmb();
+
+		/* Set EP ASPM(0xbc) */
+		writel_relaxed(0x143, dev->conf + PCIE20_CAP_LINKCTRLSTATUS_BRCM);
+		wmb();
+
+		/* Set EP LTR Latency (0x1B4) */
+		writel_relaxed(0x10031003, dev->conf + PCIE20_LTR_MAX_SNOOP_LATENCY_BRCM);
+		wmb();
+
+		/* RC: Toggle LTR Enable(0x98) */
+		msm_pcie_write_mask(dev->dm_core + PCIE20_DEVICE_CONTROL2_STATUS2, 0,
+			BIT(10));
+
+		/* EP: Toggle LTR Enable(0xd4) */
+		msm_pcie_write_mask(dev->conf + PCIE20_DEVICE_CONTROL2_STATUS2_BRCM, 0,
+			BIT(10));
+
+		PCIE_DBG(dev, "RC's CAP_LINKCTRLSTATUS:0x%x\n",
+			readl_relaxed(dev->dm_core + PCIE20_CAP_LINKCTRLSTATUS));
+		PCIE_DBG(dev, "RC's L1SUB_CONTROL1:0x%x\n",
+			readl_relaxed(dev->dm_core + PCIE20_L1SUB_CONTROL1));
+		PCIE_DBG(dev, "RC's L1SUB_CONTROL2:0x%x\n",
+			readl_relaxed(dev->dm_core + PCIE20_L1SUB_CONTROL2));
+		PCIE_DBG(dev, "RC's DEVICE_CONTROL2_STATUS2:0x%x\n",
+			readl_relaxed(dev->dm_core + PCIE20_DEVICE_CONTROL2_STATUS2));
+		PCIE_DBG(dev, "EP's CAP_LINKCTRLSTATUS:0x%x\n",
+			readl_relaxed(dev->conf + PCIE20_CAP_LINKCTRLSTATUS_BRCM));
+		PCIE_DBG(dev, "EP's L1SUB_CONTROL1:0x%x\n",
+			readl_relaxed(dev->conf + PCIE20_L1SUB_CONTROL1_BRCM));
+		PCIE_DBG(dev, "EP's L1SUB_CONTROL2:0x%x\n",
+			readl_relaxed(dev->conf + PCIE20_L1SUB_CONTROL2_BRCM));
+		PCIE_DBG(dev, "EP's DEVICE_CONTROL2_STATUS2:0x%x\n",
+			readl_relaxed(dev->conf + PCIE20_DEVICE_CONTROL2_STATUS2_BRCM));
+		PCIE_DBG(dev, "EP's PCIE20_LTR_MAX_SNOOP_LATENCY:0x%x\n",
+			readl_relaxed(dev->conf + PCIE20_LTR_MAX_SNOOP_LATENCY_BRCM));
+	} else {
+#endif
 	/* Enable L1SS on RC */
 	msm_pcie_write_mask(dev->dm_core + PCIE20_CAP_LINKCTRLSTATUS, 0,
 					BIT(1)|BIT(0));
@@ -835,6 +981,7 @@ static void msm_pcie_config_l1ss(struct msm_pcie_dev_t *dev)
 					BIT(3)|BIT(2)|BIT(1)|BIT(0));
 	msm_pcie_write_mask(dev->dm_core + PCIE20_DEVICE_CONTROL2_STATUS2, 0,
 					BIT(10));
+	readl_relaxed(dev->elbi);
 	if (dev->shadow_en) {
 		msm_pcie_write_mask(dev->rc_shadow +
 			PCIE20_CAP_LINKCTRLSTATUS / 4, 0, BIT(1)|BIT(0));
@@ -858,6 +1005,7 @@ static void msm_pcie_config_l1ss(struct msm_pcie_dev_t *dev)
 					BIT(3)|BIT(2)|BIT(1)|BIT(0));
 	msm_pcie_write_mask(dev->conf + PCIE20_DEVICE_CONTROL2_STATUS2, 0,
 					BIT(10));
+	readl_relaxed(dev->elbi);
 	if (dev->shadow_en) {
 		msm_pcie_write_mask(dev->ep_shadow +
 			PCIE20_CAP_LINKCTRLSTATUS / 4, 0, BIT(1)|BIT(0));
@@ -873,7 +1021,12 @@ static void msm_pcie_config_l1ss(struct msm_pcie_dev_t *dev)
 		readl_relaxed(dev->conf + PCIE20_L1SUB_CONTROL1 +
 					offset));
 	PCIE_DBG(dev, "EP's DEVICE_CONTROL2_STATUS2:0x%x\n",
-		readl_relaxed(dev->conf + PCIE20_DEVICE_CONTROL2_STATUS2));
+		 readl_relaxed(dev->conf + PCIE20_DEVICE_CONTROL2_STATUS2));
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+	}
+#endif
 }
 
 static int msm_pcie_get_resources(struct msm_pcie_dev_t *dev,
@@ -1181,7 +1334,10 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 	/* change DBI base address */
 	writel_relaxed(0, dev->parf + PCIE20_PARF_DBI_BASE_ADDR);
 
-	writel_relaxed(0x3656, dev->parf + PCIE20_PARF_SYS_CTRL);
+	if (dev->rc_idx)
+		writel_relaxed(0x361c, dev->parf + PCIE20_PARF_SYS_CTRL);
+	else
+		writel_relaxed(0x3656, dev->parf + PCIE20_PARF_SYS_CTRL);
 
 	if (dev->use_msi) {
 		PCIE_DBG(dev, "RC%d: enable WR halt.\n", dev->rc_idx);
@@ -1224,8 +1380,12 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 		goto link_fail;
 	}
 
-	if (dev->ep_latency)
-		msleep(dev->ep_latency);
+	if (dev->ep_latency) {
+		if (dev->ep_latency < 20)
+			usleep_range(dev->ep_latency*1000, dev->ep_latency*1000 + 1000);
+		else
+			msleep(dev->ep_latency);
+	}
 
 	/* de-assert PCIe reset link to bring EP out of reset */
 
@@ -1246,16 +1406,15 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 		usleep_range(LINK_UP_TIMEOUT_US_MIN, LINK_UP_TIMEOUT_US_MAX);
 		val =  readl_relaxed(dev->elbi + PCIE20_ELBI_SYS_STTS);
 	} while ((!(val & XMLH_LINK_UP) ||
-		!msm_pcie_confirm_linkup(dev, false, false))
-		&& (link_check_count++ < LINK_UP_CHECK_MAX_COUNT));
+				!msm_pcie_confirm_linkup(dev, false, false))
+			&& (link_check_count++ < LINK_UP_CHECK_MAX_COUNT));
 
 	if ((val & XMLH_LINK_UP) &&
-		msm_pcie_confirm_linkup(dev, false, false))
-		PCIE_DBG(dev, "Link is up after %d checkings\n",
-			link_check_count);
+			msm_pcie_confirm_linkup(dev, false, false))
+		PCIE_DBG(dev, "Link is up after %d checkings\n", link_check_count);
 	else
 		PCIE_DBG(dev, "Initial link training failed for RC%d\n",
-			dev->rc_idx);
+				dev->rc_idx);
 
 	retries = 0;
 
@@ -1437,6 +1596,46 @@ static struct hw_pci msm_pci[MAX_RC_NUM] = {
 	},
 };
 
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358_MODULE)))
+static int msm_pcie_pm_suspend(struct pci_dev *dev,
+	void *user, void *data, u32 options);
+extern int brcm_wlan_power(int onoff);
+
+static struct pci_dev *brcm_pcidev = NULL;
+static bool brcm_pcie_link_up = false;
+bool brcm_dev_found = false;
+static struct pci_saved_state *saved_state = NULL;
+static int irq = -1;
+extern bool gpio_init_completed;
+
+void msm_pcie_save_restore_brcm_dev(bool save)
+{
+	u32 vendor_id_brcm = PCI_VENDOR_ID_BROADCOM;
+	u32 device_id_brcm = 0x43e9; /* BCM4358 */
+	brcm_pcidev = pci_get_device(vendor_id_brcm,
+			device_id_brcm, brcm_pcidev);
+	if (brcm_pcidev) {
+		printk("%s: BRCM PCI device is found, pcidev=%x, IRQ=%d\n",
+			__FUNCTION__, (unsigned int)brcm_pcidev, brcm_pcidev->irq);
+		if (save) {
+			pci_save_state(brcm_pcidev);
+			saved_state = pci_store_saved_state(brcm_pcidev);
+			irq = brcm_pcidev->irq;
+		} else {
+			if (saved_state)
+				pci_load_and_free_saved_state(brcm_pcidev, &saved_state);
+			pci_restore_state(brcm_pcidev);
+			printk("%s: BRCM PCI IRQ=%d\n", __FUNCTION__, brcm_pcidev->irq);
+			brcm_pcidev->irq = irq;
+		}
+	} else {
+		printk("%s: cannot find BRCM device\n", __FUNCTION__);
+	}
+}
+#endif
+
 int msm_pcie_enumerate(u32 rc_idx)
 {
 	int ret = 0;
@@ -1457,11 +1656,17 @@ int msm_pcie_enumerate(u32 rc_idx)
 
 			PCIE_DBG(dev, "vendor-id:0x%x device_id:0x%x\n",
 					vendor_id, device_id);
-
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+			printk("%s: rc_idx(%d), vendor-id:0x%x device_id:0x%x\n",
+				__FUNCTION__, rc_idx, vendor_id, device_id);
+#endif
 			msm_pci[rc_idx].private_data = (void **)&dev;
 			pci_common_init(&msm_pci[rc_idx]);
 			/* This has to happen only once */
 			dev->enumerated = true;
+
 
 			do {
 				pcidev = pci_get_device(vendor_id,
@@ -1474,6 +1679,12 @@ int msm_pcie_enumerate(u32 rc_idx)
 					PCIE_DBG(&msm_pcie_dev[rc_idx],
 						"PCI device is found for RC%d\n",
 						rc_idx);
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+					printk("%s: PCI device is found for RC %d, pcidev=%x\n",
+						__FUNCTION__, rc_idx, (unsigned int)pcidev);
+#endif
 				}
 			} while (!found && pcidev);
 
@@ -1483,6 +1694,33 @@ int msm_pcie_enumerate(u32 rc_idx)
 					dev->rc_idx);
 				return -ENODEV;
 			}
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358_MODULE)))
+			if (rc_idx == 0) {
+				int ret;
+				msm_pcie_save_restore_brcm_dev(1);
+				if (brcm_pcidev) {
+					printk("%s: BRCM PCIE Device is found...\n", __FUNCTION__);
+					brcm_dev_found = true;
+
+					pci_stop_and_remove_bus_device(brcm_pcidev);
+					brcm_pcidev = NULL;
+					msm_pcie_dev[rc_idx].user_suspend = true;
+					ret = msm_pcie_pm_suspend(msm_pcie_dev[rc_idx].dev, NULL, NULL, 0);
+					if (ret) {
+						printk("%s: PCIe: got failure in suspend:%d.\n",
+							__FUNCTION__, ret);
+						msm_pcie_dev[rc_idx].user_suspend = false;
+					}
+					if (gpio_init_completed)
+						brcm_wlan_power(0);
+				} else {
+					brcm_dev_found = false;
+				}
+				brcm_pcie_link_up = false;
+			}
+#endif
 		} else {
 			PCIE_ERR(dev, "PCIe: failed to enable RC%d.\n",
 				dev->rc_idx);
@@ -1536,6 +1774,13 @@ static int msm_pcie_probe(struct platform_device *pdev)
 		pcie_drv.rc_num++;
 		PCIE_DBG(&msm_pcie_dev[rc_idx], "PCIe: RC index is %d.\n",
 			rc_idx);
+	}
+
+
+	if(rc_idx == 1 && mdm9x35 == 0) {
+		PCIE_ERR(&msm_pcie_dev[rc_idx],
+				"MDM9x25 doesn't need RC%d\n",rc_idx);
+		goto out;
 	}
 
 	msm_pcie_dev[rc_idx].l1ss_supported =
@@ -1649,6 +1894,15 @@ static int msm_pcie_probe(struct platform_device *pdev)
 		goto decrease_rc_num;
 
 	ret = msm_pcie_gpio_init(&msm_pcie_dev[rc_idx]);
+
+#ifdef CONFIG_CNSS
+#if defined (CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT)
+	if(system_rev > 3 && rc_idx != 1 ) {
+		msm_pcie_wlan_en(true);
+	}
+#endif
+#endif
+
 	if (ret) {
 		msm_pcie_release_resources(&msm_pcie_dev[rc_idx]);
 		goto decrease_rc_num;
@@ -1669,15 +1923,24 @@ static int msm_pcie_probe(struct platform_device *pdev)
 		return 0;
 	}
 
-	ret = msm_pcie_enumerate(rc_idx);
+#if !defined(CONFIG_CNSS) && (defined (CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT))
+		PCIE_ERR((&msm_pcie_dev[rc_idx]), "%s",
+				"it will be enumerated upon WAKE signal.\n");
+#else
+	if(rc_idx != 1) {
+		ret = msm_pcie_enumerate(rc_idx);
 
-	if (ret)
-		PCIE_ERR(&msm_pcie_dev[rc_idx],
-			"PCIe: RC%d is not enabled during bootup; it will be enumerated upon WAKE signal.\n",
-			rc_idx);
-	else
-		PCIE_ERR(&msm_pcie_dev[rc_idx], "RC%d is enabled in bootup\n",
-			rc_idx);
+		if (ret)
+			PCIE_ERR((&msm_pcie_dev[rc_idx]),
+					"PCIe:failed to enable RC %d in bootup; \
+					it will be enumerated upon WAKE signal.\n", rc_idx);
+		else
+			PCIE_ERR((&msm_pcie_dev[rc_idx]), "RC%d is enabled in bootup\n", rc_idx);
+	} else {
+			PCIE_ERR((&msm_pcie_dev[rc_idx]), "%s",
+						"it will be enumerated upon WAKE signal.\n");
+	}
+#endif /* CONFIG_SEC_TRLTE_PROJECT || CONFIG_SEC_TBLTE_PROJECT */
 
 	PCIE_DBG(&msm_pcie_dev[rc_idx], "PCIE probed %s\n",
 		dev_name(&(pdev->dev)));
@@ -1811,6 +2074,12 @@ static int msm_pcie_pm_suspend(struct pci_dev *dev,
 	pcie_dev->suspending = true;
 	PCIE_DBG(pcie_dev, "RC%d\n", pcie_dev->rc_idx);
 
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+	printk("%s: RC %d\n", __FUNCTION__, pcie_dev->rc_idx);
+#endif
+
 	if (!pcie_dev->power_on) {
 		PCIE_DBG(pcie_dev,
 			"PCIe: power of RC%d has been turned off.\n",
@@ -1888,6 +2157,12 @@ static int msm_pcie_pm_resume(struct pci_dev *dev,
 	struct msm_pcie_dev_t *pcie_dev = PCIE_BUS_PRIV_DATA(dev);
 
 	PCIE_DBG(pcie_dev, "RC%d\n", pcie_dev->rc_idx);
+
+#if (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) || \
+	defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE)))
+	printk("%s: RC %d\n", __FUNCTION__, pcie_dev->rc_idx);
+#endif
 
 	spin_lock_irqsave(&pcie_dev->cfg_lock,
 				pcie_dev->irqsave_flags);
@@ -2165,13 +2440,13 @@ int msm_pcie_recover_config(struct pci_dev *dev)
 		PCIE_DBG(pcie_dev, "Recover EP of RC%d\n", pcie_dev->rc_idx);
 		msm_pcie_cfg_recover(pcie_dev, false);
 		PCIE_DBG(pcie_dev,
-			"Refreshing the saved config space in PCI framework for RC%d and its EP\n",
-			pcie_dev->rc_idx);
+				"Refreshing the saved config space in PCI framework for RC%d and its EP\n",
+				pcie_dev->rc_idx);
 		pci_save_state(pcie_dev->dev);
 		pci_save_state(dev);
 		pcie_dev->shadow_en = true;
 		PCIE_DBG(pcie_dev, "Turn on shadow for RC%d\n",
-			pcie_dev->rc_idx);
+				pcie_dev->rc_idx);
 	} else {
 		PCIE_ERR(pcie_dev,
 			"PCIe: the link of RC%d is not up yet; can't recover config space.\n",
@@ -2210,3 +2485,66 @@ int msm_pcie_shadow_control(struct pci_dev *dev, bool enable)
 	return ret;
 }
 EXPORT_SYMBOL(msm_pcie_shadow_control);
+
+#ifdef CONFIG_BCMDHD_PCIE
+int msm_pcie_status_notify(int val)
+{
+#if defined(CONFIG_BCM4354_MODULE) || defined(CONFIG_BCM4358_MODULE)
+	int rc_idx = 0;
+	int ret;
+	struct msm_pcie_dev_t *pcie_dev = &msm_pcie_dev[rc_idx];
+	struct pci_dev *pcidev = pcie_dev->dev;
+
+	if (!brcm_dev_found) {
+		printk("%s: Could not find BRCM PCI device...\n", __FUNCTION__);
+		brcm_pcie_link_up = false;
+		pcie_dev->user_suspend = true;
+		return -ENODEV;
+	}
+
+	if (val) {
+		if (!brcm_pcie_link_up) {
+			printk("%s: tried to bring-up PCIe Link...\n", __FUNCTION__);
+			ret = msm_pcie_pm_resume(pcidev, NULL, NULL, 0);
+			if (ret) {
+				printk("%s: Failed to bring-up PCIe link!, ret=%d\n",
+					__FUNCTION__, ret);
+				return ret;
+			} else {
+				brcm_pcie_link_up = true;
+				pcie_dev->user_suspend = false;
+			}
+		}
+
+		ret = pci_rescan_bus(pcidev->bus);
+		printk("%s: Find %d PCIE devices\n",
+			__FUNCTION__, ret);
+		msm_pcie_save_restore_brcm_dev(0);
+	} else {
+		if (brcm_pcidev) {
+			pci_stop_and_remove_bus_device(brcm_pcidev);
+			brcm_pcidev = NULL;
+		} else {
+			printk("%s: cannot find BRCM PCIE device\n",
+				__FUNCTION__);
+		}
+
+		pcie_dev->user_suspend = true;
+		ret = msm_pcie_pm_suspend(pcidev, NULL, NULL, 0);
+		if (ret) {
+			printk("%s: Failed to shutdown PCIe link!, ret=%d\n",
+				__FUNCTION__, ret);
+			pcie_dev->user_suspend = false;
+		} else {
+			brcm_pcie_link_up = false;
+		}
+	}
+	/* Wait for 100ms for link stability */
+	msleep(100);
+#endif
+	return 0;
+}
+EXPORT_SYMBOL(msm_pcie_status_notify);
+#endif
+
+

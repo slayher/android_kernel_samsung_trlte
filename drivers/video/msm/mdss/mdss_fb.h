@@ -74,7 +74,7 @@ enum mdp_notify_event {
 
 struct disp_info_type_suspend {
 	int op_enable;
-	int panel_power_on;
+	int panel_power_state;
 };
 
 struct disp_info_notify {
@@ -181,7 +181,8 @@ struct msm_fb_data_type {
 	int panel_reconfig;
 
 	u32 dst_format;
-	int panel_power_on;
+	int resume_state;
+	int panel_power_state;
 	struct disp_info_type_suspend suspend;
 
 	struct ion_handle *ihdl;
@@ -239,6 +240,7 @@ struct msm_fb_data_type {
 	bool mdss_fb_split_stored;
 
 	u32 wait_for_kickoff;
+	int doze_mode;
 };
 
 static inline void mdss_fb_update_notify_update(struct msm_fb_data_type *mfd)
@@ -260,10 +262,51 @@ static inline void mdss_fb_update_notify_update(struct msm_fb_data_type *mfd)
 	}
 }
 
+static inline bool mdss_fb_is_power_off(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_off(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on_interactive(
+	struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on_interactive(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on_lp(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on_lp(mfd->panel_power_state);
+}
+
+#ifdef CONFIG_SAMSUNG_LPM_MODE
+extern int poweroff_charging;
+#endif /* CONFIG_SAMSUNG_LPM_MODE */
+
+#ifdef CONFIG_FB_MSM_CAMERA_CSC
+extern u8 csc_update;
+extern u8 csc_change;
+#endif
+
+#if defined(CONFIG_FB_MSM_MIPI_SAMSUNG_OCTA_CMD_FHD_FA2_PT_PANEL)
+enum TE_SETTING {
+	TE_SET_INIT = -1,
+	TE_SET_READY,
+	TE_SET_START,
+	TE_SET_DONE,
+	TE_SET_FAIL,
+};
+#endif
+
 int mdss_fb_get_phys_info(dma_addr_t *start, unsigned long *len, int fb_num);
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl);
 void mdss_fb_update_backlight(struct msm_fb_data_type *mfd);
 int mdss_fb_wait_for_fence(struct msm_sync_pt_data *sync_pt_data);
+int mdss_fb_get_first_cmt_flag(void);
 void mdss_fb_signal_timeline(struct msm_sync_pt_data *sync_pt_data);
 struct sync_fence *mdss_fb_sync_get_fence(struct sw_sync_timeline *timeline,
 				const char *fence_name, int val);

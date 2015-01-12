@@ -194,6 +194,7 @@
 
 /* Global USB2 PHY Configuration Register */
 #define DWC3_GUSB2PHYCFG_PHYSOFTRST	(1 << 31)
+#define DWC3_GUSB2PHYCFG_ENBLSLPM	(1 << 8)
 #define DWC3_GUSB2PHYCFG_SUSPHY		(1 << 6)
 
 /* Global USB3 PIPE Control Register */
@@ -445,6 +446,35 @@ struct dwc3_event_buffer {
 	struct dwc3		*dwc;
 };
 
+struct dwc3_gadget_events {
+	unsigned int	disconnect;
+	unsigned int	reset;
+	unsigned int	connect;
+	unsigned int	wakeup;
+	unsigned int	link_status_change;
+	unsigned int	eopf;
+	unsigned int	suspend;
+	unsigned int	sof;
+	unsigned int	erratic_error;
+	unsigned int	overflow;
+	unsigned int	vendor_dev_test_lmp;
+	unsigned int	cmdcmplt;
+	unsigned int	unknown_event;
+};
+
+struct dwc3_ep_events {
+	unsigned int	xfercomplete;
+	unsigned int	xfernotready;
+	unsigned int	control_data;
+	unsigned int	control_status;
+	unsigned int	xferinprogress;
+	unsigned int	rxtxfifoevent;
+	unsigned int	streamevent;
+	unsigned int	epcmdcomplete;
+	unsigned int	cmdcmplt;
+	unsigned int	unknown_event;
+};
+
 #define DWC3_EP_FLAG_STALLED	(1 << 0)
 #define DWC3_EP_FLAG_WEDGED	(1 << 1)
 
@@ -475,6 +505,7 @@ struct dwc3_event_buffer {
  * @name: a human readable name e.g. ep1out-bulk
  * @direction: true for TX, false for RX
  * @stream_capable: true when streams are enabled
+ * @dbg_ep_events: different events counter for endpoint
  */
 struct dwc3_ep {
 	struct usb_ep		endpoint;
@@ -511,6 +542,7 @@ struct dwc3_ep {
 
 	unsigned		direction:1;
 	unsigned		stream_capable:1;
+	struct dwc3_ep_events	dbg_ep_events;
 };
 
 enum dwc3_phy {
@@ -676,6 +708,8 @@ struct dwc3_scratchpad_array {
 #define DWC3_CORE_PM_SUSPEND_EVENT			5
 #define DWC3_CORE_PM_RESUME_EVENT			6
 #define DWC3_CONTROLLER_POST_INITIALIZATION_EVENT	7
+
+#define MAX_INTR_STATS				10
 /**
  * struct dwc3 - representation of our controller
  * @ctrl_req: usb control request which is used for ep0
@@ -727,6 +761,11 @@ struct dwc3_scratchpad_array {
  * @root: debugfs root folder pointer
  * @tx_fifo_size: Available RAM size for TX fifo allocation
  * @err_evt_seen: previous event in queue was erratic error
+ * @irq: irq number
+ * @bh: tasklet which handles the interrupt
+ * @bh_completion_time: time taken for taklet completion
+ * @bh_handled_evt_cnt: no. of events handled by tasklet per interrupt
+ * @bh_dbg_index: index for capturing bh_completion_time and bh_handled_evt_cnt
  */
 struct dwc3 {
 	struct usb_ctrlrequest	*ctrl_req;
@@ -834,6 +873,21 @@ struct dwc3 {
 	bool			core_reset_after_phy_init;
 	bool			err_evt_seen;
 	bool			enable_suspend_event;
+	struct dwc3_gadget_events	dbg_gadget_events;
+
+	/* offload IRQ handling to tasklet */
+	int			irq;
+	struct tasklet_struct	bh;
+	unsigned                bh_completion_time[MAX_INTR_STATS];
+	unsigned                bh_handled_evt_cnt[MAX_INTR_STATS];
+	unsigned                bh_dbg_index;
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_USB30_MENU
+	enum usb_device_speed	speed_limit;
+	struct work_struct	reconnect_work;
+	int			ss_host_avail;
+	bool			reconnect;
+#endif
 };
 
 /* -------------------------------------------------------------------------- */

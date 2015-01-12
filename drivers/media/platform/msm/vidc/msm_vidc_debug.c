@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,7 +20,10 @@ int msm_vidc_debug_out = VIDC_OUT_PRINTK;
 int msm_fw_debug = 0x18;
 int msm_fw_debug_mode = 0x1;
 int msm_fw_low_power_mode = 0x1;
+int msm_vp8_low_tier = 0x0;/* 0x1; *//* changed to support 3840x2160 VP8 */
 int msm_vidc_hw_rsp_timeout = 1000;
+int msm_vidc_dcvs_mode = 0x0;
+int msm_vidc_vpe_csc_601_to_709;
 
 struct debug_buffer {
 	char ptr[MAX_DBG_BUF_SIZE];
@@ -149,6 +152,11 @@ struct dentry *msm_vidc_debugfs_init_drv(void)
 		dprintk(VIDC_ERR, "debugfs_create_file: fail\n");
 		goto failed_create_dir;
 	}
+	if (!debugfs_create_u32("dcvs_mode", S_IRUGO | S_IWUSR,
+			dir, &msm_vidc_dcvs_mode)) {
+		dprintk(VIDC_WARN, "debugfs_create_file dcvs_mode: fail\n");
+		goto failed_create_dir;
+	}
 	if (!debugfs_create_u32("fw_low_power_mode", S_IRUGO | S_IWUSR,
 			dir, &msm_fw_low_power_mode)) {
 		dprintk(VIDC_ERR, "debugfs_create_file: fail\n");
@@ -195,6 +203,11 @@ struct dentry *msm_vidc_debugfs_init_core(struct msm_vidc_core *core,
 	}
 	if (!debugfs_create_file("trigger_ssr", S_IWUSR,
 			dir, core, &ssr_fops)) {
+		dprintk(VIDC_ERR, "debugfs_create_file: fail\n");
+		goto failed_create_dir;
+	}
+	if (!debugfs_create_bool("enable_vpe_csc_601_709", S_IRUGO | S_IWUSR,
+			dir, &msm_vidc_vpe_csc_601_to_709)) {
 		dprintk(VIDC_ERR, "debugfs_create_file: fail\n");
 		goto failed_create_dir;
 	}

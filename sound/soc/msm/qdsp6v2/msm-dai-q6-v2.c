@@ -717,6 +717,12 @@ static int msm_dai_q6_spdif_dai_probe(struct snd_soc_dai *dai)
 	const struct snd_kcontrol_new *kcontrol;
 	int rc = 0;
 	struct snd_soc_dapm_route intercon;
+
+	if (!dai) {
+		pr_err("%s Invalid params\n", __func__);
+		return -EINVAL;
+	}
+
 	dai_data = kzalloc(sizeof(struct msm_dai_q6_spdif_dai_data),
 			GFP_KERNEL);
 
@@ -733,7 +739,7 @@ static int msm_dai_q6_spdif_dai_probe(struct snd_soc_dai *dai)
 			snd_ctl_new1(kcontrol, dai_data));
 
 	memset(&intercon, 0 , sizeof(intercon));
-	if (!rc && dai && dai->driver) {
+	if (!rc && dai->driver) {
 		if (dai->driver->playback.stream_name &&
 				dai->driver->playback.aif_name) {
 			dev_dbg(dai->dev, "%s add route for widget %s",
@@ -1212,7 +1218,7 @@ static int msm_dai_q6_set_channel_map(struct snd_soc_dai *dai,
 		for (i = 0; i < tx_num; i++) {
 			dai_data->port_config.slim_sch.shared_ch_mapping[i] =
 			    tx_slot[i];
-			pr_debug("%s: find number of channels[%d] ch[%d]\n",
+			pr_info("%s: find number of channels[%d] ch[%d]\n",
 				 __func__, i, tx_slot[i]);
 		}
 		dai_data->port_config.slim_sch.num_channels = tx_num;
@@ -1264,6 +1270,11 @@ static int msm_dai_q6_dai_remove(struct snd_soc_dai *dai)
 {
 	struct msm_dai_q6_dai_data *dai_data;
 	int rc;
+
+	if (!dai || !dai->dev) {
+		pr_err("%s Invalid params\n", __func__);
+		return -EINVAL;
+	}
 
 	dai_data = dev_get_drvdata(dai->dev);
 

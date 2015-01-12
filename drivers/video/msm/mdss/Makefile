@@ -17,15 +17,34 @@ ifeq ($(CONFIG_FB_MSM_MDSS),y)
 obj-$(CONFIG_DEBUG_FS) += mdss_debug.o mdss_debug_xlog.o
 endif
 
+ifeq ($(CONFIG_FB_MSM_MDSS_DSI_DBG),y)
+ifeq ($(CONFIG_DEBUG_FS),y)
+obj-$(CONFIG_DEBUG_FS) += xlog.o
+endif
+endif
 dsi-v2-objs = dsi_v2.o dsi_host_v2.o dsi_io_v2.o
 obj-$(CONFIG_FB_MSM_MDSS_MDP3) += dsi-v2.o
 
 mdss-dsi-objs := mdss_dsi.o mdss_dsi_host.o mdss_dsi_cmd.o
-mdss-dsi-objs += mdss_dsi_panel.o
+mdss-dsi-objs += mdss_samsung_dsi_panel_common.o
+
+ifeq ($(CONFIG_FB_MSM_MIPI_SAMSUNG_OCTA_S6E3HA2_CMD_WQHD_PT_PANEL),y)
+mdss-dsi-objs += smart_mtp_s6e3ha2x01.o
+else ifeq ($(CONFIG_FB_MSM_MIPI_SAMSUNG_OCTA_S6E3HA2_CMD_WQXGA_PT_PANEL),y)
+mdss-dsi-objs += smart_mtp_s6e3ha2x01.o
+else
+mdss-dsi-objs += smart_mtp_common.o
+endif
+
+CFLAGS_smart_mtp_common.o += -Wno-unused-variable
+CFLAGS_smart_mtp_s6e3ha2x01.o += -Wno-unused-variable
+
 mdss-dsi-objs += msm_mdss_io_8974.o
 obj-$(CONFIG_FB_MSM_MDSS) += mdss-dsi.o
 obj-$(CONFIG_FB_MSM_MDSS_EDP_PANEL) += mdss_edp.o
 obj-$(CONFIG_FB_MSM_MDSS_EDP_PANEL) += mdss_edp_aux.o
+CFLAGS_smart_mtp_se6e3fa.o += -Wno-unused-variable
+obj-$(CONFIG_MDNIE_LITE_TUNING) += mdnie_lite_tuning.o
 
 obj-$(CONFIG_FB_MSM_MDSS) += mdss_io_util.o
 obj-$(CONFIG_FB_MSM_MDSS_HDMI_PANEL) += mdss_hdmi_tx.o

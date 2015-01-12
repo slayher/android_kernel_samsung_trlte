@@ -260,7 +260,11 @@ static void notification_available_cb(struct urb *urb)
 		dev->rx_state = RX_BUSY;
 		spin_unlock_irqrestore(&dev->lock, flags);
 		dev->resp_avail++;
+#if defined (CONFIG_SEC_TRLTE_CHNDUOS)
+		usb_autopm_get_interface_async(dev->intf);
+#else
 		usb_autopm_get_interface_no_resume(dev->intf);
+#endif
 		usb_fill_control_urb(dev->readurb, dev->udev,
 					usb_rcvctrlpipe(dev->udev, 0),
 					(unsigned char *)dev->in_ctlreq,

@@ -81,7 +81,11 @@ static int mpq_sdmx_scramble_default_discard = 1;
 module_param(mpq_sdmx_scramble_default_discard, int, S_IRUGO | S_IWUSR);
 
 /* Whether to use secure demux or bypass it. Use for debugging */
+#if defined(CONFIG_SECURE_DEMUX_ENABLE)
+static int mpq_bypass_sdmx = 0;
+#else
 static int mpq_bypass_sdmx = 1;
+#endif
 module_param(mpq_bypass_sdmx, int, S_IRUGO | S_IWUSR);
 
 /* Max number of TS packets allowed as input for a single sdmx process */
@@ -934,10 +938,11 @@ static int mpq_map_buffer_to_kernel(
 	} else {
 		unsigned long tmp;
 		*kernel_mem = ion_map_kernel(client, ion_handle);
-		if (*kernel_mem == NULL) {
-			MPQ_DVB_ERR_PRINT("%s: ion_map_kernel failed\n",
-				__func__);
-			ret = -ENOMEM;
+		if (IS_ERR_OR_NULL(*kernel_mem)) {
+			ret = PTR_ERR(*kernel_mem);
+			MPQ_DVB_ERR_PRINT("%s: ion_map_kernel failed, ret=%d\n", __func__, ret);
+			if (!ret)
+				ret = -ENOMEM;
 			goto map_buffer_failed_free_buff;
 		}
 		ion_handle_get_size(client, ion_handle, &tmp);
@@ -3532,10 +3537,13 @@ static int mpq_sdmx_get_buffer_chunks(struct mpq_demux *mpq_demux,
 		sizeof(struct sdmx_buff_descr) * SDMX_MAX_PHYSICAL_CHUNKS);
 
 	sg_ptr = ion_sg_table(mpq_demux->ion_client, buff_handle);
-	if (sg_ptr == NULL) {
-		MPQ_DVB_ERR_PRINT("%s: ion_sg_table failed\n",
-			__func__);
-		return -EINVAL;
+	if (IS_ERR_OR_NULL(sg_ptr)) {
+		int ret;
+		ret = PTR_ERR(sg_ptr);
+		MPQ_DVB_ERR_PRINT("%s: ion_sg_table failed, ret=%d\n", __func__, ret);
+		if (!ret)
+			ret = -EINVAL;
+		return ret;
 	}
 
 	if (sg_ptr->nents == 0) {

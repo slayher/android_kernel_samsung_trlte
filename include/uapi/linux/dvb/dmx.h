@@ -5,7 +5,7 @@
  *                  & Ralph  Metzler <ralph@convergence.de>
  *                    for convergence integrated media GmbH
  *
- * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -37,7 +37,7 @@
 /* Min recording chunk upon which event is generated */
 #define DMX_REC_BUFF_CHUNK_MIN_SIZE		(100*188)
 
-#define DMX_MAX_DECODER_BUFFER_NUM		(32)
+#define DMX_MAX_DECODER_BUFFER_NUM		(64)
 
 typedef enum
 {
@@ -183,7 +183,10 @@ struct dmx_buffer_status {
 	/* fullness of buffer in bytes */
 	unsigned int fullness;
 
-	/* How many bytes are free */
+	/*
+	 * How many bytes are free
+	 * It's the same as: size-fullness-1
+	 */
 	unsigned int free_bytes;
 
 	/* read pointer offset in bytes */
@@ -877,6 +880,5 @@ struct dmx_scrambling_bits {
 #define DMX_GET_SCRAMBLING_BITS _IOWR('o', 72, struct dmx_scrambling_bits)
 #define DMX_SET_CIPHER _IOW('o', 73, struct dmx_cipher_operations)
 #define DMX_FLUSH_BUFFER _IO('o', 74)
-
-
+#define DMX_GET_PCR_TS_INSERTED _IOR('o', 75, unsigned long long int)
 #endif /* _UAPI_DVBDMX_H_ */

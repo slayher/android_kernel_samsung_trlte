@@ -1094,12 +1094,16 @@ static void handle_set_deq_completion(struct xhci_hcd *xhci,
 	struct xhci_virt_device *dev;
 	struct xhci_ep_ctx *ep_ctx;
 	struct xhci_slot_ctx *slot_ctx;
-	unsigned int slot_state;
 
 	slot_id = TRB_TO_SLOT_ID(le32_to_cpu(trb->generic.field[3]));
 	ep_index = TRB_TO_EP_INDEX(le32_to_cpu(trb->generic.field[3]));
 	stream_id = TRB_TO_STREAM_ID(le32_to_cpu(trb->generic.field[2]));
 	dev = xhci->devs[slot_id];
+
+	if (!dev) {
+		xhci_err(xhci, "ERROR xhci->devs[%d] is NULL \n",slot_id);
+		return;
+	}
 
 	ep_ring = xhci_stream_id_to_ring(dev, ep_index, stream_id);
 	if (!ep_ring) {
@@ -1113,11 +1117,10 @@ static void handle_set_deq_completion(struct xhci_hcd *xhci,
 
 	ep_ctx = xhci_get_ep_ctx(xhci, dev->out_ctx, ep_index);
 	slot_ctx = xhci_get_slot_ctx(xhci, dev->out_ctx);
-	slot_state = le32_to_cpu(slot_ctx->dev_state);
-	slot_state = GET_SLOT_STATE(slot_state);
 
 	if (GET_COMP_CODE(le32_to_cpu(event->status)) != COMP_SUCCESS) {
 		unsigned int ep_state;
+		unsigned int slot_state;
 
 		switch (GET_COMP_CODE(le32_to_cpu(event->status))) {
 		case COMP_TRB_ERR:
@@ -1131,6 +1134,8 @@ static void handle_set_deq_completion(struct xhci_hcd *xhci,
 					"to incorrect slot or ep state.\n");
 			ep_state = le32_to_cpu(ep_ctx->ep_info);
 			ep_state &= EP_STATE_MASK;
+			slot_state = le32_to_cpu(slot_ctx->dev_state);
+			slot_state = GET_SLOT_STATE(slot_state);
 			xhci_dbg(xhci, "Slot state = %u, EP state = %u\n",
 					slot_state, ep_state);
 			break;
@@ -1179,7 +1184,7 @@ static void handle_set_deq_completion(struct xhci_hcd *xhci,
 
 	/* reset ring here if it was not done due to pending set tr deq cmd */
 	if (xhci->quirks & XHCI_TR_DEQ_RESET_QUIRK &&
-			list_empty(&ep_ring->td_list) && slot_state)
+			list_empty(&ep_ring->td_list))
 		xhci_reset_ep_ring(xhci, slot_id, ep_ring, ep_index);
 }
 
@@ -2562,7 +2567,7 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 				 * successful event after a short transfer.
 				 * Ignore it.
 				 */
-				if ((xhci->quirks & XHCI_SPURIOUS_SUCCESS) && 
+				if ((xhci->quirks & XHCI_SPURIOUS_SUCCESS) &&
 						ep_ring->last_td_was_short) {
 					ep_ring->last_td_was_short = false;
 					ret = 0;
@@ -2677,7 +2682,7 @@ cleanup:
  * Returns >0 for "possibly more events to process" (caller should call again),
  * otherwise 0 if done.  In future, <0 returns should indicate error code.
  */
-static int xhci_handle_event(struct xhci_hcd *xhci)
+int xhci_handle_event(struct xhci_hcd *xhci)
 {
 	union xhci_trb *event;
 	int update_ptrs = 1;
@@ -3330,6 +3335,9 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 	bool more_trbs_coming;
 	int start_cycle;
 	u32 field, length_field;
+	int zlp_required = 0;
+	int max_packet = 0;
+	bool last = false;
 
 	int running_total, trb_buff_len, ret;
 	unsigned int total_packet_count;
@@ -3358,11 +3366,17 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 		num_trbs++;
 		running_total += TRB_MAX_BUFF_SIZE;
 	}
-	/* FIXME: this doesn't deal with URB_ZERO_PACKET - need one more */
+
+	max_packet = usb_endpoint_maxp(&urb->ep->desc);
+	if (!usb_urb_dir_in(urb) && urb->transfer_buffer_length &&
+		(urb->transfer_flags & URB_ZERO_PACKET) &&
+		!(urb->transfer_buffer_length % max_packet)) {
+		zlp_required = 1;
+	}
 
 	ret = prepare_transfer(xhci, xhci->devs[slot_id],
 			ep_index, urb->stream_id,
-			num_trbs, urb, 0, mem_flags);
+			num_trbs + zlp_required, urb, 0, mem_flags);
 	if (ret < 0)
 		return ret;
 
@@ -3402,17 +3416,6 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 		} else
 			field |= ep_ring->cycle_state;
 
-		/* Chain all the TRBs together; clear the chain bit in the last
-		 * TRB to indicate it's the last TRB in the chain.
-		 */
-		if (num_trbs > 1) {
-			field |= TRB_CHAIN;
-		} else {
-			/* FIXME - add check for ZERO_PACKET flag before this */
-			td->last_trb = ep_ring->enqueue;
-			field |= TRB_IOC;
-		}
-
 		/* Only set interrupt on short packet for IN endpoints */
 		if (usb_urb_dir_in(urb))
 			field |= TRB_ISP;
@@ -3431,15 +3434,36 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 			remainder |
 			TRB_INTR_TARGET(0);
 
-		if (num_trbs > 1)
-			more_trbs_coming = true;
-		else
-			more_trbs_coming = false;
+		more_trbs_coming = true;
+		field |= TRB_CHAIN;
+		if (num_trbs <= 1) {
+			last = true;
+			if (!zlp_required) {
+				more_trbs_coming = false;
+				td->last_trb = ep_ring->enqueue;
+				field &= ~TRB_CHAIN;
+				field |= TRB_IOC;
+			}
+		}
+
 		queue_trb(xhci, ep_ring, more_trbs_coming,
 				lower_32_bits(addr),
 				upper_32_bits(addr),
 				length_field,
 				field | TRB_TYPE(TRB_NORMAL));
+
+		if (last && zlp_required) {
+			td->last_trb = ep_ring->enqueue;
+			field |= TRB_IOC;
+			field &= ~TRB_CHAIN;
+			field &= ~TRB_CYCLE;
+			field |= ep_ring->cycle_state;
+
+			queue_trb(xhci, ep_ring, false,
+				0, 0, TRB_INTR_TARGET(0),
+				field | TRB_TYPE(TRB_NORMAL));
+		}
+
 		--num_trbs;
 		running_total += trb_buff_len;
 

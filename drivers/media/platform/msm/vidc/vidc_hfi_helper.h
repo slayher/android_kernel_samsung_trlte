@@ -323,7 +323,10 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x021)
 #define HFI_PROPERTY_PARAM_VENC_PRESERVE_TEXT_QUALITY \
 	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x023)
-
+#define HFI_PROPERTY_PARAM_VENC_HIER_P_MAX_NUM_ENH_LAYER	\
+	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x026)
+#define HFI_PROPERTY_PARAM_VENC_INITIAL_QP	\
+	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x028)
 
 #define HFI_PROPERTY_CONFIG_VENC_COMMON_START				\
 	(HFI_DOMAIN_BASE_VENC + HFI_ARCH_COMMON_OFFSET + 0x6000)
@@ -537,6 +540,13 @@ struct hfi_quantization {
 	u32 layer_id;
 };
 
+struct hfi_initial_quantization {
+	u32 qp_i;
+	u32 qp_p;
+	u32 qp_b;
+	u32 init_qp_enable;
+};
+
 struct hfi_quantization_range {
 	u32 min_qp;
 	u32 max_qp;
@@ -632,6 +642,12 @@ struct hfi_codec_supported {
 struct hfi_properties_supported {
 	u32 num_properties;
 	u32 rg_properties[1];
+};
+
+struct hfi_vpe_color_space_conversion {
+	u32 csc_matrix[9];
+	u32 csc_bias[3];
+	u32 csc_limit[6];
 };
 
 #define HFI_ROTATE_NONE					(HFI_COMMON_BASE + 0x1)

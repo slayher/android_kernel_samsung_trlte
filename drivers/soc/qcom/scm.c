@@ -24,6 +24,13 @@
 
 #include <soc/qcom/scm.h>
 
+#include <linux/thread_info.h>
+#include <linux/sched.h>
+#include <linux/string.h>
+#if defined CONFIG_ARCH_MSM8226 || defined CONFIG_ARCH_APQ8084
+#include <linux/smp.h>
+#endif
+
 #define SCM_ENOMEM		-5
 #define SCM_EOPNOTSUPP		-4
 #define SCM_EINVAL_ADDR		-3
@@ -186,17 +193,56 @@ static u32 smc(u32 cmd_addr)
 	return r0;
 }
 
+#if defined CONFIG_ARCH_MSM8226 || defined CONFIG_ARCH_APQ8084
+static void __wrap_flush_cache_all(void* vp)
+{
+	flush_cache_all();
+}
+#endif
+
+#ifdef CONFIG_TIMA_LKMAUTH
+pid_t pid_from_lkm = -1;
+#endif
 static int __scm_call(const struct scm_command *cmd)
 {
+	int flush_all_need;
+	int call_from_ss_daemon;
 	int ret;
 	u32 cmd_addr = virt_to_phys(cmd);
 
+	/*
+	 * in case of QSEE command
+	 */
+	flush_all_need = ((cmd->id & 0x0003FC00) == (252 << 10));
+
+	/*
+	 * in case of secure_storage_daemon
+	*/
+	call_from_ss_daemon = (strncmp(current_thread_info()->task->comm, "secure_storage_daemon", TASK_COMM_LEN - 1) == 0);
+
+#ifdef CONFIG_TIMA_LKMAUTH
+	/* we just use the call_from_ss_daemon for simple code */
+	if (pid_from_lkm == current_thread_info()->task->pid) {
+		call_from_ss_daemon = 1;
+		printk(KERN_ERR "scm call by lkmauth\n");
+	}
+#endif
 	/*
 	 * Flush the command buffer so that the secure world sees
 	 * the correct data.
 	 */
 	__cpuc_flush_dcache_area((void *)cmd, cmd->len);
 	outer_flush_range(cmd_addr, cmd_addr + cmd->len);
+
+	if (flush_all_need && call_from_ss_daemon) {
+		flush_cache_all();
+
+#if defined CONFIG_ARCH_MSM8226 || defined CONFIG_ARCH_APQ8084
+		smp_call_function((void (*)(void *))__wrap_flush_cache_all, NULL, 1);
+#endif
+
+		outer_flush_all();
+	}
 
 	ret = smc(cmd_addr);
 	if (ret < 0)
@@ -425,6 +471,42 @@ s32 scm_call_atomic1(u32 svc, u32 cmd, u32 arg1)
 	return r0;
 }
 EXPORT_SYMBOL(scm_call_atomic1);
+
+/**
+ * scm_call_atomic1_1() - SCM command with one argument and one return value
+ * @svc_id: service identifier
+ * @cmd_id: command identifier
+ * @arg1: first argument
+ * @ret1: first return value
+ *
+ * This shall only be used with commands that are guaranteed to be
+ * uninterruptable, atomic and SMP safe.
+ */
+s32 scm_call_atomic1_1(u32 svc, u32 cmd, u32 arg1, u32 *ret1)
+{
+	int context_id;
+	register u32 r0 asm("r0") = SCM_ATOMIC(svc, cmd, 1);
+	register u32 r1 asm("r1") = (uintptr_t)&context_id;
+	register u32 r2 asm("r2") = arg1;
+
+	asm volatile(
+		__asmeq("%0", R0_STR)
+		__asmeq("%1", R1_STR)
+		__asmeq("%2", R0_STR)
+		__asmeq("%3", R1_STR)
+		__asmeq("%4", R2_STR)
+#ifdef REQUIRES_SEC
+			".arch_extension sec\n"
+#endif
+		"smc	#0\n"
+		: "=r" (r0), "=r" (r1)
+		: "r" (r0), "r" (r1), "r" (r2)
+		: "r3");
+	if (ret1)
+		*ret1 = r1;
+	return r0;
+}
+EXPORT_SYMBOL(scm_call_atomic1_1);
 
 /**
  * scm_call_atomic2() - Send an atomic SCM command with two arguments

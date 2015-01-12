@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
 #include <linux/cpu.h>
+#include <linux/qpnp/pin.h>
 #include <linux/of.h>
 #include <linux/irqchip/msm-mpm-irq.h>
 #include <linux/hrtimer.h>
@@ -26,10 +27,15 @@
 #include <linux/suspend.h>
 #include <linux/pm_qos.h>
 #include <linux/of_platform.h>
+#include <mach/gpiomux.h>
 #include <soc/qcom/spm.h>
 #include <soc/qcom/pm.h>
 #include <soc/qcom/rpm-notifier.h>
 #include <soc/qcom/event_timer.h>
+#include <linux/regulator/consumer.h>
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
 
 #define SCLK_HZ (32768)
 
@@ -118,6 +124,12 @@ module_param_named(
 static int msm_pm_sleep_time_override;
 module_param_named(sleep_time_override,
 	msm_pm_sleep_time_override, int, S_IRUGO | S_IWUSR | S_IWGRP);
+
+#ifdef CONFIG_SEC_PM_DEBUG
+static int msm_pm_sleep_sec_debug;
+module_param_named(secdebug,
+	msm_pm_sleep_sec_debug, int, S_IRUGO | S_IWUSR | S_IWGRP);
+#endif
 
 static struct cpumask num_powered_cores;
 static struct hrtimer lpm_hrtimer;
@@ -828,6 +840,24 @@ static int lpm_suspend_prepare(void)
 	suspend_in_progress = true;
 	msm_mpm_suspend_prepare();
 
+#ifdef CONFIG_SEC_GPIO_DVS
+	/************************ Caution !!! ****************************
+	 * This functiongit a must be located in appropriate SLEEP position
+	 * in accordance with the specification of each BB vendor.
+	 ************************ Caution !!! ****************************/
+	gpio_dvs_check_sleepgpio();
+#endif
+
+#ifdef CONFIG_SEC_PM
+	regulator_showall_enabled();
+#endif
+
+#ifdef CONFIG_SEC_PM_DEBUG
+	if (msm_pm_sleep_sec_debug) {
+		msm_gpio_print_enabled();
+		qpnp_debug_suspend_show();
+	}
+#endif
 	return 0;
 }
 

@@ -590,13 +590,6 @@ static int __reqbufs(struct vb2_queue *q, struct v4l2_requestbuffers *req)
 		return -EBUSY;
 	}
 
-	/*
-	 * If the same number of buffers and memory access method is requested
-	 * then return immediately.
-	 */
-	if (q->memory == req->memory && req->count == q->num_buffers)
-		return 0;
-
 	if (req->count == 0 || q->num_buffers != 0 || q->memory != req->memory) {
 		/*
 		 * We already have buffers allocated, so first check if they
@@ -620,7 +613,7 @@ static int __reqbufs(struct vb2_queue *q, struct v4l2_requestbuffers *req)
 	/*
 	 * Make sure the requested values and current defaults are sane.
 	 */
-	num_buffers = min_t(unsigned int, req->count, VIDEO_MAX_FRAME);
+	num_buffers = min_t(unsigned int, req->count, VB2_MAX_FRAME);
 	memset(q->plane_sizes, 0, sizeof(q->plane_sizes));
 	memset(q->alloc_ctx, 0, sizeof(q->alloc_ctx));
 	q->memory = req->memory;
@@ -711,7 +704,7 @@ static int __create_bufs(struct vb2_queue *q, struct v4l2_create_buffers *create
 	unsigned int num_planes = 0, num_buffers, allocated_buffers;
 	int ret;
 
-	if (q->num_buffers == VIDEO_MAX_FRAME) {
+	if (q->num_buffers == VB2_MAX_FRAME) {
 		dprintk(1, "%s(): maximum number of buffers already allocated\n",
 			__func__);
 		return -ENOBUFS;
@@ -723,7 +716,7 @@ static int __create_bufs(struct vb2_queue *q, struct v4l2_create_buffers *create
 		q->memory = create->memory;
 	}
 
-	num_buffers = min(create->count, VIDEO_MAX_FRAME - q->num_buffers);
+	num_buffers = min(create->count, VB2_MAX_FRAME - q->num_buffers);
 
 	/*
 	 * Ask the driver, whether the requested number of buffers, planes per
@@ -1523,13 +1516,17 @@ static void __vb2_dqbuf(struct vb2_buffer *vb)
 	vb->state = VB2_BUF_STATE_DEQUEUED;
 
 	/* unmap DMABUF buffer */
-	if (q->memory == V4L2_MEMORY_DMABUF)
+	if (q->memory == V4L2_MEMORY_DMABUF) {
+		if (vb->num_planes > VIDEO_MAX_PLANES)
+			panic("vb->num_planes exceeds the maximum index range.");
+
 		for (i = 0; i < vb->num_planes; ++i) {
 			if (!vb->planes[i].dbuf_mapped)
 				continue;
 			call_memop(q, unmap_dmabuf, vb->planes[i].mem_priv);
 			vb->planes[i].dbuf_mapped = 0;
 		}
+	}
 }
 
 /**
@@ -2130,7 +2127,7 @@ struct vb2_fileio_buf {
 struct vb2_fileio_data {
 	struct v4l2_requestbuffers req;
 	struct v4l2_buffer b;
-	struct vb2_fileio_buf bufs[VIDEO_MAX_FRAME];
+	struct vb2_fileio_buf bufs[VB2_MAX_FRAME];
 	unsigned int index;
 	unsigned int q_count;
 	unsigned int dq_count;
