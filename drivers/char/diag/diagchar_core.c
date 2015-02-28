@@ -47,6 +47,8 @@
 #include <linux/compat.h>
 #endif
 
+#include <linux/of.h>
+
 MODULE_DESCRIPTION("Diag Char Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION("1.0");
@@ -82,6 +84,10 @@ static unsigned int threshold_client_limit = 30;
 int diag_max_reg = 600;
 int diag_threshold_reg = 750;
 
+#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
+static int enable_diag;
+#endif
+
 /* Timer variables */
 static struct timer_list drain_timer;
 static int timer_in_progress;
@@ -89,6 +95,9 @@ void *buf_hdlc;
 module_param(itemsize, uint, 0);
 module_param(poolsize, uint, 0);
 module_param(max_clients, uint, 0);
+
+int diag_debug_lvl = DIAG_DEBUG_HIGH;
+void *diag_ipc_log;
 
 /* delayed_rsp_id 0 represents no delay in the response. Any other number
     means that the diag packet has a delayed response. */
@@ -688,12 +697,10 @@ drop:
 	}
 
 	entry->in_service = 0;
-	mutex_unlock(&entry->write_buf_mutex);
-
 	exit_stat = 0;
 exit:
+	mutex_unlock(&entry->write_buf_mutex);
 	*pret = ret;
-
 	return exit_stat;
 }
 
@@ -1404,6 +1411,7 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 	int num_data = 0, data_type;
 	int remote_token;
 	int exit_stat;
+	int copy_dci_data = 0;
 	int copy_data = 0;
 	unsigned long flags;
 
@@ -1668,7 +1676,10 @@ drop:
 								sizeof(int));
 			COPY_USER_SPACE_OR_EXIT(buf + ret,
 					entry->client_info.token, sizeof(int));
+			DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] + copying dci data to user\n", __func__);
+			copy_dci_data = 1;
 			exit_stat = diag_copy_dci(buf, count, entry, &ret);
+			DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] - copying dci data to user, exit_stat: %d\n", __func__, exit_stat);
 			if (exit_stat == 1)
 				goto exit;
 		}
@@ -1702,6 +1713,8 @@ exit:
 		wake_up(&driver->smd_wait_q);
 		diag_ws_on_copy_complete(DIAG_WS_MD);
 	}
+	if (copy_dci_data)
+		DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] - finished copying data in this iteration\n", __func__);
 	mutex_unlock(&driver->diagchar_mutex);
 	return ret;
 }
@@ -2515,6 +2528,16 @@ void diagfwd_bridge_fn(int type)
 inline void diagfwd_bridge_fn(int type) { }
 #endif
 
+#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
+static int check_diagchar_enabled(char *str)
+{
+	get_option(&str, &enable_diag);
+	pr_debug("%s : enable_diag = %s\n", __func__, ((enable_diag) ? "Yes":"No"));
+	return 0;
+}
+__setup("diag=", check_diagchar_enabled);
+#endif
+
 static int __init diagchar_init(void)
 {
 	dev_t dev;
@@ -2522,6 +2545,14 @@ static int __init diagchar_init(void)
 
 	pr_debug("diagfwd initializing ..\n");
 	ret = 0;
+
+#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
+	if (!enable_diag) {
+		pr_info("diagchar_core isn't enabled.\n");
+		return -EPERM;
+	}
+#endif
+
 	driver = kzalloc(sizeof(struct diagchar_dev) + 5, GFP_KERNEL);
 	if (!driver)
 		return -ENOMEM;
@@ -2537,19 +2568,19 @@ static int __init diagchar_init(void)
 			  sizeof(struct diag_bridge_dci_dev), GFP_KERNEL);
 	if (!diag_bridge_dci) {
 		pr_warn("diag: could not allocate memory for dci bridges\n");
-		goto fail;
+		goto fail_diag_bridge;
 	}
 	diag_hsic = kzalloc(MAX_HSIC_DATA_CH * sizeof(struct diag_hsic_dev),
 								GFP_KERNEL);
 	if (!diag_hsic) {
 		pr_warn("diag: could not allocate memory for hsic ch\n");
-		goto fail;
+		goto fail_diag_bridge_dci;
 	}
 	diag_hsic_dci = kzalloc(MAX_HSIC_DCI_CH *
 				sizeof(struct diag_hsic_dci_dev), GFP_KERNEL);
 	if (!diag_hsic_dci) {
 		pr_warn("diag: could not allocate memory for hsic dci ch\n");
-		goto fail;
+		goto fail_diag_hsic;
 	}
 #endif
 
@@ -2579,40 +2610,46 @@ static int __init diagchar_init(void)
 	init_waitqueue_head(&driver->wait_q);
 	init_waitqueue_head(&driver->smd_wait_q);
 	INIT_WORK(&(driver->diag_drain_work), diag_drain_work_fn);
+	diag_ipc_log = ipc_log_context_create(DIAG_IPC_LOG_PAGES, "diag");
+	if (!diag_ipc_log)
+		pr_err("diag: failed to create IPC logging context\n");
 	diag_ws_init();
 	ret = diag_real_time_info_init();
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diag_debugfs_init();
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diag_masks_init();
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diagfwd_init();
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 #ifdef CONFIG_DIAGFWD_BRIDGE_CODE
 	ret = diagfwd_bridge_init(HSIC_DATA_CH);
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diagfwd_bridge_init(HSIC_DATA_CH_2);
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diagfwd_bridge_dci_init(HSIC_DCI_CH);
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	ret = diagfwd_bridge_dci_init(HSIC_DCI_CH_2);
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	/* register HSIC device */
 	ret = platform_driver_register(&msm_hsic_ch_driver);
-	if (ret)
+	if (ret) {
 		pr_err("diag: could not register HSIC device, ret: %d\n",
 			ret);
+		goto fail_diag_hsic_dci;
+	}
+
 	ret = diagfwd_bridge_init(SMUX);
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	INIT_WORK(&(driver->diag_connect_work),
 					 diag_connect_work_fn);
 	INIT_WORK(&(driver->diag_disconnect_work),
@@ -2620,7 +2657,7 @@ static int __init diagchar_init(void)
 #endif
 	ret = diagfwd_cntl_init();
 	if (ret)
-		goto fail;
+		goto fail_diag_hsic_dci;
 	driver->dci_state = diag_dci_init();
 	pr_debug("diagchar initializing ..\n");
 	driver->num = 1;
@@ -2634,16 +2671,30 @@ static int __init diagchar_init(void)
 		driver->minor_start = MINOR(dev);
 	} else {
 		pr_err("diag: Major number not allocated\n");
-		goto fail;
+		goto fail_diag_hsic_dci;
 	}
 	driver->cdev = cdev_alloc();
+	if (!driver->cdev)
+		goto fail_alloc_cdev;
 	error = diagchar_setup_cdev(dev);
 	if (error)
-		goto fail;
+		goto fail_setup_cdev;
 
 	pr_debug("diagchar initialized now");
 	return 0;
 
+fail_setup_cdev:
+	cdev_del(driver->cdev);
+fail_alloc_cdev:
+	unregister_chrdev_region(dev, driver->num);
+fail_diag_hsic_dci:
+	kfree(diag_hsic_dci);
+fail_diag_hsic:
+	kfree(diag_hsic);
+fail_diag_bridge_dci:
+	kfree(diag_bridge_dci);
+fail_diag_bridge:
+	kfree(diag_bridge);
 fail:
 	pr_err("diagchar is not initialized, ret: %d\n", ret);
 	diag_debugfs_cleanup();
@@ -2653,6 +2704,7 @@ fail:
 	diag_dci_exit();
 	diag_masks_exit();
 	diagfwd_bridge_fn(EXIT);
+	kfree(driver);
 	return -1;
 }
 
